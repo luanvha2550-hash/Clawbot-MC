@@ -1,0 +1,42 @@
+{
+	"schemaVersion": 1,
+	"id": "clawbot-mc",
+	"version": "${version}",
+	"name": "Clawbot-MC",
+	"description": "An intelligent Minecraft companion bot with AI-powered autonomy, combat, and memory systems.",
+	"authors": [
+		"Luanv"
+	],
+	"contact": {
+		"homepage": "https://modrinth.com/mod/clawbot-mc",
+		"sources": "https://github.com/luanvha2550-hash/Clawbot-MC"
+	},
+	"license": "MIT",
+	"icon": "assets/clawbot-mc/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"net.shasankp000.AIPlayer"
+		],
+		"client": [
+			"net.shasankp000.AIPlayerClient"
+		],
+		"fabric-datagen": [
+			"net.shasankp000.AIPlayerDataGenerator"
+		]
+	},
+	"mixins": [
+		"clawbot-mc.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.16.10",
+		"minecraft": "~1.21.1",
+		"java": ">=21",
+		"fabric-api": "*"
+	},
+	"suggests": {
+		"carpet": "1.4.147",
+		"owo-lib": "0.12.15.4+1.21"
+	}
+
+}
