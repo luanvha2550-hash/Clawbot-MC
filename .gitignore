@@ -22,4 +22,4 @@ run/
 logs/
 
 # Fabric
-*.class
+*.class.worktrees/
