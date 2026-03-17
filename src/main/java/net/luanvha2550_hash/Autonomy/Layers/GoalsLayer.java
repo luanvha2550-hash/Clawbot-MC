@@ -56,6 +56,7 @@ public class GoalsLayer implements DecisionLayer {
     // Goal completion tracking
     private static final int MAX_PLAN_STEPS = 20;
     private static final long GOAL_TIMEOUT_MS = 300000; // 5 minutes
+    private static final long STEP_EXECUTION_TIMEOUT_MS = 10000; // 10 seconds per step
 
     private final ServerPlayerEntity bot;
     private final Object knowledgeCache;  // Will be KnowledgeCache when implemented
@@ -64,6 +65,11 @@ public class GoalsLayer implements DecisionLayer {
     private Goal currentGoal;
     private int currentStepIndex;
     private long goalStartTime;
+
+    // Step execution tracking - prevents spamming the same action
+    private String lastExecutedActionId = null;
+    private long lastActionStartTime = 0;
+    private boolean stepInProgress = false;
 
     // Cached goal results
     private List<Goal> lastGeneratedGoals;
@@ -97,6 +103,43 @@ public class GoalsLayer implements DecisionLayer {
     public ActionResult evaluate(AutonomyContext context) {
         // 1. If we have an active goal, continue executing the plan
         if (currentGoal != null && !currentGoal.isCompleted()) {
+            // Check for goal timeout
+            if (System.currentTimeMillis() - goalStartTime > GOAL_TIMEOUT_MS) {
+                LOGGER.warn("[Goals] Goal timed out: {}", currentGoal.getDescription());
+                abandonCurrentGoal("timeout");
+                return ActionResult.noAction();
+            }
+
+            // Check if current step is already in progress
+            if (stepInProgress) {
+                // Check if step execution timed out
+                long stepElapsed = System.currentTimeMillis() - lastActionStartTime;
+                if (stepElapsed > STEP_EXECUTION_TIMEOUT_MS) {
+                    // Step timed out - mark as completed and move to next
+                    LOGGER.info("[Goals] Step timed out after {}ms, advancing: {}",
+                        stepElapsed, currentGoal.getSteps().get(currentStepIndex).getDescription());
+
+                    // Mark step as completed and advance
+                    if (currentStepIndex < currentGoal.getSteps().size()) {
+                        currentGoal.getSteps().get(currentStepIndex).markCompleted();
+                    }
+                    currentStepIndex++;
+                    stepInProgress = false;
+
+                    // Check if goal is complete
+                    if (currentStepIndex >= currentGoal.getSteps().size()) {
+                        completeCurrentGoal();
+                    }
+
+                    // Return no action for this tick - will continue next tick
+                    return ActionResult.noAction();
+                }
+
+                // Step is still in progress - return no action (don't spam)
+                LOGGER.debug("[Goals] Step {} in progress, waiting...", currentStepIndex + 1);
+                return ActionResult.noAction();
+            }
+
             ActionResult continueResult = continueGoalExecution(context);
             if (continueResult.shouldExecute()) {
                 return continueResult;
@@ -595,14 +638,58 @@ public class GoalsLayer implements DecisionLayer {
         }
 
         GoalStep currentStep = steps.get(currentStepIndex);
+        String actionId = currentStep.getActionId();
 
-        LOGGER.debug("[Goals] Executing step {}/{}: {}",
-            currentStepIndex + 1, steps.size(), currentStep.getDescription());
+        // Check if this step is already being executed
+        if (stepInProgress && actionId.equals(lastExecutedActionId)) {
+            long timeSinceStart = System.currentTimeMillis() - lastActionStartTime;
+
+            // If step timed out, mark it as completed and move to next
+            if (timeSinceStart > STEP_EXECUTION_TIMEOUT_MS) {
+                LOGGER.info("[Goals] Step timed out after {}ms, moving to next step", timeSinceStart);
+                currentStep.markCompleted();
+                currentStepIndex++;
+                stepInProgress = false;
+
+                // Check if goal is now complete
+                if (currentStepIndex >= steps.size()) {
+                    completeCurrentGoal();
+                    return ActionResult.noAction();
+                }
+
+                // Move to next step
+                GoalStep nextStep = steps.get(currentStepIndex);
+                LOGGER.info("[Goals] Moving to step {}/{}: {}",
+                    currentStepIndex + 1, steps.size(), nextStep.getDescription());
+
+                return startStepExecution(nextStep);
+            }
+
+            // Step is still in progress - return no action to wait
+            LOGGER.debug("[Goals] Step '{}' in progress ({}ms elapsed)", actionId, timeSinceStart);
+            return ActionResult.noAction();
+        }
+
+        // Start new step
+        return startStepExecution(currentStep);
+    }
+
+    /**
+     * Start executing a new step.
+     */
+    private ActionResult startStepExecution(GoalStep step) {
+        step.start();
+        lastExecutedActionId = step.getActionId();
+        lastActionStartTime = System.currentTimeMillis();
+        stepInProgress = true;
+
+        LOGGER.info("[Goals] Starting step {}/{}: {}",
+            currentStepIndex + 1, currentGoal.getSteps().size(), step.getDescription());
 
         return ActionResult.scheduled(
-            currentStep.getActionId(),
+            step.getActionId(),
             currentGoal.getId(),
-            currentStep.getDescription()
+            step.getDescription()
         );
     }
 
@@ -623,6 +710,8 @@ public class GoalsLayer implements DecisionLayer {
         currentGoal = null;
         currentStepIndex = 0;
         goalStartTime = 0;
+        stepInProgress = false;
+        lastExecutedActionId = null;
     }
 
     /**
@@ -636,6 +725,8 @@ public class GoalsLayer implements DecisionLayer {
         currentGoal = null;
         currentStepIndex = 0;
         goalStartTime = 0;
+        stepInProgress = false;
+        lastExecutedActionId = null;
     }
 
     /**
@@ -645,8 +736,32 @@ public class GoalsLayer implements DecisionLayer {
         this.currentGoal = goal;
         this.currentStepIndex = 0;
         this.goalStartTime = System.currentTimeMillis();
+        this.stepInProgress = false;
+        this.lastExecutedActionId = null;
         LOGGER.info("[Goals] Starting goal: {} with {} steps",
             goal.getDescription(), goal.getSteps().size());
+    }
+
+    /**
+     * Mark the current step as completed (called by AutonomyEngine after action execution).
+     * This advances to the next step in the goal plan.
+     */
+    public void notifyStepCompleted() {
+        if (currentGoal == null || currentStepIndex >= currentGoal.getSteps().size()) {
+            return;
+        }
+
+        GoalStep currentStep = currentGoal.getSteps().get(currentStepIndex);
+        currentStep.markCompleted();
+        LOGGER.info("[Goals] Step completed: {}", currentStep.getDescription());
+
+        currentStepIndex++;
+        stepInProgress = false;
+
+        // Check if goal is now complete
+        if (currentStepIndex >= currentGoal.getSteps().size()) {
+            completeCurrentGoal();
+        }
     }
 
     /**

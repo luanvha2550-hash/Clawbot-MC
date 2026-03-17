@@ -61,6 +61,8 @@ public class CombatLayer implements DecisionLayer {
     private Entity currentTarget;
     private int ticksSinceLastAttack;
     private CombatMode combatMode;
+    private String lastActionId;  // Track last action to prevent spam
+    private long lastActionTime;  // Time of last action to throttle
 
     public CombatLayer(ServerPlayerEntity bot) {
         this.bot = bot;
@@ -68,6 +70,8 @@ public class CombatLayer implements DecisionLayer {
         this.rlAgent = new RLAgent();
         this.combatMode = CombatMode.BALANCED;
         this.ticksSinceLastAttack = 0;
+        this.lastActionId = "";
+        this.lastActionTime = 0;
     }
 
     @Override
@@ -90,13 +94,11 @@ public class CombatLayer implements DecisionLayer {
             return ActionResult.noAction();
         }
 
-        // Check for survival layer override (retreat if critical health)
-        if (shouldRetreatForSurvival(context)) {
-            LOGGER.info("[Combat] Retreating due to critical health");
-            return createRetreatAction(context, hostileEntities);
-        }
+        // Throttle actions - only process new combat actions every 500ms
+        long currentTime = System.currentTimeMillis();
+        long MIN_ACTION_INTERVAL_MS = 500;
 
-        // Prioritize targets using AdvancedCombatAI
+        // Get the primary threat for action determination
         PlayerEntity ownerToProtect = getOwnerToProtect(context);
         List<TargetInfo> prioritizedTargets = combatAI.prioritizeTargets(bot, hostileEntities, ownerToProtect);
 
@@ -105,12 +107,32 @@ public class CombatLayer implements DecisionLayer {
             return ActionResult.noAction();
         }
 
-        // Get the highest priority target
         TargetInfo primaryTarget = prioritizedTargets.get(0);
+
+        // Check for survival layer override (retreat if critical health)
+        if (shouldRetreatForSurvival(context)) {
+            // Always allow retreat actions
+            clearCombatState();
+            LOGGER.info("[Combat] Retreating due to critical health");
+            return createRetreatAction(context, hostileEntities);
+        }
 
         // Update combat state
         currentTarget = primaryTarget.entity;
         combatAI.setTarget(primaryTarget.entity);
+
+        // Generate action ID for throttling
+        String actionId = "DEFEND_OWNER_" + primaryTarget.entity.getUuidAsString();
+
+        // Skip if we're still processing the same action and not enough time has passed
+        if (actionId.equals(lastActionId) && (currentTime - lastActionTime) < MIN_ACTION_INTERVAL_MS) {
+            // Return no action to prevent spam - we're still executing the previous action
+            return ActionResult.noAction();
+        }
+
+        // Update throttle tracking
+        lastActionId = actionId;
+        lastActionTime = currentTime;
 
         // Determine best action based on context
         ActionResult action = determineCombatAction(context, prioritizedTargets, primaryTarget);
@@ -291,42 +313,157 @@ public class CombatLayer implements DecisionLayer {
 
     // ========== Action Executors ==========
 
+    /**
+     * Execute a melee attack on the target.
+     * Moves toward target if not in range, then attacks.
+     */
     private void executeMeleeAttack(Entity target) {
         LOGGER.info("[Combat] Executing melee attack on {}", target.getType().getName().getString());
-        // Combat execution would be handled by the combat system
+
+        double distance = bot.squaredDistanceTo(target);
+        if (distance > MELEE_RANGE * MELEE_RANGE) {
+            // Need to approach first
+            approachTarget(target);
+        } else {
+            // In range - attack
+            performAttack(target);
+        }
         ticksSinceLastAttack = 0;
     }
 
+    /**
+     * Execute a ranged attack on the target.
+     */
     private void executeRangedAttack(Entity target) {
         LOGGER.info("[Combat] Executing ranged attack on {}", target.getType().getName().getString());
-        // Ranged combat execution would be handled by the combat system
+        // Face the target
+        faceTarget(target);
+        // Use bow if available
+        // TODO: Implement ranged attack via Carpet commands
     }
 
+    /**
+     * Block with shield and prepare counter attack.
+     */
     private void executeBlockAndCounter(Entity target) {
         LOGGER.info("[Combat] Blocking and preparing counter against {}", target.getType().getName().getString());
-        // Block and counter logic
+        // Use shield
+        // TODO: Implement shield blocking via Carpet commands
     }
 
+    /**
+     * Approach a target for combat.
+     */
     private void executeApproach(Entity target) {
         LOGGER.info("[Combat] Approaching target: {}", target.getType().getName().getString());
-        // Movement system handles approach
+        approachTarget(target);
     }
 
+    /**
+     * Position for optimal attack angle.
+     */
     private void executePositionAndAttack(Entity target) {
         LOGGER.info("[Combat] Positioning for optimal attack on {}", target.getType().getName().getString());
-        // Combined positioning and attack
+        // Strafe and attack
+        approachTarget(target);
     }
 
+    /**
+     * Retreat from enemies.
+     */
     private void executeRetreat(Vec3d direction, List<Entity> enemies) {
         LOGGER.info("[Combat] Retreating from {} enemies", enemies.size());
         combatMode = CombatMode.RETREAT;
-        // Movement system handles retreat
+
+        // Move away from enemies
+        Vec3d retreatPos = bot.getPos().add(direction.multiply(10));
+        String botName = bot.getName().getString();
+        bot.getServer().getCommandManager().executeWithPrefix(
+            bot.getCommandSource().withSilent().withMaxLevel(4),
+            "/player " + botName + " move backward");
     }
 
+    /**
+     * Defend the owner from a threat.
+     * Moves toward threat and engages.
+     */
     private void executeDefendOwner(Entity threat) {
         LOGGER.info("[Combat] Defending owner from threat: {}", threat.getType().getName().getString());
         combatMode = CombatMode.DEFENSIVE;
-        // Prioritize threat elimination
+
+        // Approach the threat
+        approachTarget(threat);
+
+        // Attack if in range
+        double distance = bot.squaredDistanceTo(threat);
+        if (distance <= MELEE_RANGE * MELEE_RANGE) {
+            performAttack(threat);
+        }
+    }
+
+    // ========== Movement and Combat Helpers ==========
+
+    /**
+     * Move toward a target entity for combat.
+     */
+    private void approachTarget(Entity target) {
+        Vec3d targetPos = target.getPos();
+        Vec3d currentPos = bot.getPos();
+
+        // Face the target
+        faceTarget(target);
+
+        // Calculate distance
+        double distance = Math.sqrt(currentPos.squaredDistanceTo(targetPos));
+        if (distance < 2.0) {
+            // Already close enough
+            return;
+        }
+
+        // Move toward target using Carpet commands
+        String botName = bot.getName().getString();
+
+        // Calculate movement direction
+        double dx = targetPos.x - currentPos.x;
+        double dz = targetPos.z - currentPos.z;
+
+        // Use forward movement toward target
+        bot.getServer().getCommandManager().executeWithPrefix(
+            bot.getCommandSource().withSilent().withMaxLevel(4),
+            "/player " + botName + " move forward");
+    }
+
+    /**
+     * Make the bot face a target entity.
+     */
+    private void faceTarget(Entity target) {
+        Vec3d targetPos = target.getPos();
+        Vec3d currentPos = bot.getPos();
+
+        double dx = targetPos.x - currentPos.x;
+        double dz = targetPos.z - currentPos.z;
+        double distance = Math.sqrt(dx * dx + dz * dz);
+
+        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        float pitch = (float) Math.toDegrees(-Math.atan2(targetPos.y - currentPos.y, distance));
+
+        bot.setYaw(yaw);
+        bot.setPitch(pitch);
+    }
+
+    /**
+     * Perform an attack on an entity.
+     */
+    private void performAttack(Entity target) {
+        String botName = bot.getName().getString();
+        String targetName = target.hasCustomName() ? target.getCustomName().getString() : target.getType().getName().getString();
+
+        // Use Carpet attack command
+        bot.getServer().getCommandManager().executeWithPrefix(
+            bot.getCommandSource().withSilent().withMaxLevel(4),
+            "/player " + botName + " attack " + targetName);
+
+        LOGGER.debug("[Combat] Attacked {}", targetName);
     }
 
     // ========== Utility Methods ==========
@@ -430,6 +567,22 @@ public class CombatLayer implements DecisionLayer {
         currentTarget = null;
         combatAI.clearTarget();
         combatMode = CombatMode.PASSIVE;
+        lastActionId = "";
+        lastActionTime = 0;
+        // Stop any ongoing movement
+        stopMovement();
+    }
+
+    /**
+     * Stop all movement commands.
+     */
+    private void stopMovement() {
+        if (bot.getServer() != null) {
+            String botName = bot.getName().getString();
+            bot.getServer().getCommandManager().executeWithPrefix(
+                bot.getCommandSource().withSilent().withMaxLevel(4),
+                "/player " + botName + " stop");
+        }
     }
 
     /**

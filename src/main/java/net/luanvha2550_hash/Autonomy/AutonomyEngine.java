@@ -99,6 +99,15 @@ public class AutonomyEngine {
     private UUID ownerUUID;
     private ServerPlayerEntity owner;
 
+    // Movement state tracking - prevents starting new movements while one is in progress
+    private volatile boolean isMoving = false;
+    private BlockPos lastMovementTarget = null;
+    private long lastMovementTime = 0;
+    private BlockPos cachedResourcePos = null;
+    private String cachedResourceType = null;
+    private static final long MOVEMENT_TIMEOUT_MS = 5000; // Max time for a movement command
+    private static final int MAX_SCAN_RADIUS = 32; // Reduced from 64 to prevent blocking
+
     /**
      * Create a new AutonomyEngine.
      *
@@ -428,16 +437,27 @@ public class AutonomyEngine {
     }
 
     /**
-     * Find nearest resource block based on resource type.
+     * Find nearest resource block based on resource type (default 16 block radius).
      *
      * @param resourceType Resource type (wood, stone, iron, coal, diamond, etc.)
      * @param context Current autonomy context
      * @return BlockPos of nearest resource, or null if not found
      */
     private BlockPos findNearestResourceBlock(String resourceType, AutonomyContext context) {
+        return findNearestResourceBlock(resourceType, context, 16);
+    }
+
+    /**
+     * Find nearest resource block based on resource type with configurable scan radius.
+     *
+     * @param resourceType Resource type (wood, stone, iron, coal, diamond, etc.)
+     * @param context Current autonomy context
+     * @param scanRadius Radius to scan for resources (in blocks)
+     * @return BlockPos of nearest resource, or null if not found
+     */
+    private BlockPos findNearestResourceBlock(String resourceType, AutonomyContext context, int scanRadius) {
         ServerWorld world = (ServerWorld) bot.getWorld();
         BlockPos botPos = bot.getBlockPos();
-        int scanRadius = 16; // Scan within 16 blocks
 
         // Define block types to search for based on resource
         List<String> targetBlocks = switch (resourceType) {
@@ -564,6 +584,21 @@ public class AutonomyEngine {
         }
 
         String actionId = action.getActionId();
+
+        // Check if movement is already in progress
+        if (isMoving && isMovementAction(actionId)) {
+            long timeSinceLastMovement = System.currentTimeMillis() - lastMovementTime;
+            // If movement has been in progress for too long, reset state
+            if (timeSinceLastMovement > MOVEMENT_TIMEOUT_MS) {
+                LOGGER.warn("[AutonomyEngine] Movement timeout, resetting state");
+                isMoving = false;
+            } else {
+                // Skip this action - movement is already in progress
+                LOGGER.debug("[AutonomyEngine] Skipping {} - movement already in progress", actionId);
+                return;
+            }
+        }
+
         LOGGER.info("[AutonomyEngine] Executing action: {} - {}", actionId, action.getDescription());
 
         // Check if we have a movement target
@@ -588,7 +623,23 @@ public class AutonomyEngine {
     }
 
     /**
-     * Execute a movement action using the navigation system.
+     * Check if an action requires movement.
+     */
+    private boolean isMovementAction(String actionId) {
+        return actionId != null && (
+            actionId.startsWith("GATHER_") ||
+            actionId.equals("FOLLOW_OWNER") ||
+            actionId.equals("PATROL_AREA") ||
+            actionId.equals("RETREAT") ||
+            actionId.startsWith("APPROACH_") ||
+            actionId.startsWith("DEFEND_")
+        );
+    }
+
+    /**
+     * Execute a movement action using direct movement.
+     * PathFinder is TOO SLOW for real-time tick - it blocks the thread.
+     * We use direct movement with Carpet Mod commands instead.
      */
     private void executeMovementAction(ActionResult action, AutonomyContext context) {
         Vec3d targetPos = action.getTargetPosition();
@@ -597,45 +648,16 @@ public class AutonomyEngine {
             return;
         }
 
-        BlockPos targetBlockPos = new BlockPos((int) targetPos.x, (int) targetPos.y, (int) targetPos.z);
-        ServerWorld world = (ServerWorld) bot.getWorld();
-
         LOGGER.info("[AutonomyEngine] Moving to ({}, {}, {})",
             (int) targetPos.x, (int) targetPos.y, (int) targetPos.z);
 
-        try {
-            // Use PathFinder for navigation
-            List<PathFinder.PathNode> path = PathFinder.calculatePath(
-                bot.getBlockPos(), targetBlockPos, world);
-
-            if (path != null && !path.isEmpty()) {
-                // Simplify and convert to segments
-                List<PathFinder.PathNode> simplified = PathFinder.simplifyPath(path, world);
-                java.util.Queue<Segment> segments = PathFinder.convertPathToSegments(simplified, false);
-
-                // Execute movement
-                MinecraftServer server = bot.getServer();
-                if (server != null) {
-                    PathTracer.BotSegmentManager manager = new PathTracer.BotSegmentManager(
-                        server, bot.getCommandSource(), bot.getName().getString());
-                    segments.forEach(manager::addSegmentJob);
-                    manager.startProcessing();
-                    LOGGER.debug("[AutonomyEngine] Navigation started with {} segments", segments.size());
-                }
-            } else {
-                // Fallback: direct movement for short distances
-                LOGGER.warn("[AutonomyEngine] PathFinder returned no path, trying direct movement");
-                moveDirectlyTo(targetPos);
-            }
-        } catch (Exception e) {
-            LOGGER.error("[AutonomyEngine] Movement failed: {}", e.getMessage());
-            // Try direct movement as fallback
-            moveDirectlyTo(targetPos);
-        }
+        // Direct movement is fast and non-blocking
+        moveDirectlyTo(targetPos);
     }
 
     /**
      * Direct movement fallback using Carpet Mod commands.
+     * Uses PathTracer's scheduled movement system for proper execution.
      */
     private void moveDirectlyTo(Vec3d targetPos) {
         MinecraftServer server = bot.getServer();
@@ -646,38 +668,48 @@ public class AutonomyEngine {
         double dz = targetPos.z - currentPos.z;
         double distance = Math.sqrt(dx * dx + dz * dz);
 
-        if (distance < 0.5) {
+        if (distance < 1.5) {
             // Already close enough
+            LOGGER.debug("[AutonomyEngine] Already close to target (distance: {:.1f})", distance);
+            isMoving = false;
             return;
         }
 
-        // Normalize direction
-        double dirX = dx / distance;
-        double dirZ = dz / distance;
+        // Calculate direction and look at target
+        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        float pitch = (float) Math.toDegrees(-Math.atan2(targetPos.y - currentPos.y, distance));
+        bot.setYaw(yaw);
+        bot.setPitch(pitch);
 
-        // Use Carpet Mod commands to move
         String botName = bot.getName().getString();
 
-        // Determine direction and move
-        if (Math.abs(dirX) > Math.abs(dirZ)) {
-            if (dirX > 0) {
-                server.getCommandManager().executeWithPrefix(bot.getCommandSource(), "/player " + botName + " move forward");
-            } else {
-                server.getCommandManager().executeWithPrefix(bot.getCommandSource(), "/player " + botName + " move backward");
-            }
-        } else {
-            if (dirZ > 0) {
-                server.getCommandManager().executeWithPrefix(bot.getCommandSource(), "/player " + botName + " move forward");
-            } else {
-                server.getCommandManager().executeWithPrefix(bot.getCommandSource(), "/player " + botName + " move backward");
-            }
-        }
+        // Set movement state
+        isMoving = true;
+        lastMovementTime = System.currentTimeMillis();
+        lastMovementTarget = new BlockPos((int) targetPos.x, (int) targetPos.y, (int) targetPos.z);
 
-        // Also update look direction to face target
-        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
-        bot.setYaw(yaw);
+        // Use direct movement WITHOUT pathfinding (pathfinding blocks the tick thread!)
+        // Calculate movement time based on walking speed (4.3 blocks/sec)
+        double walkTime = distance / 4.317; // seconds
+        long walkTimeMs = (long) (walkTime * 1000);
 
-        LOGGER.debug("[AutonomyEngine] Moving toward target using Carpet Mod commands");
+        LOGGER.info("[AutonomyEngine] Direct movement to ({}, {}, {}) at distance {:.1f}m ({}ms)",
+            (int) targetPos.x, (int) targetPos.y, (int) targetPos.z, distance, walkTimeMs);
+
+        // Start movement
+        server.getCommandManager().executeWithPrefix(
+            bot.getCommandSource().withSilent().withMaxLevel(4),
+            "/player " + botName + " move forward");
+
+        // Schedule stop after calculated time (capped at 5 seconds)
+        final long actualWalkTime = Math.min(walkTimeMs, 5000);
+        scheduler.schedule(() -> {
+            server.getCommandManager().executeWithPrefix(
+                bot.getCommandSource().withSilent().withMaxLevel(4),
+                "/player " + botName + " stop");
+            isMoving = false;
+            LOGGER.debug("[AutonomyEngine] Movement completed after {}ms", actualWalkTime);
+        }, actualWalkTime, TimeUnit.MILLISECONDS);
     }
 
     /**
@@ -753,17 +785,47 @@ public class AutonomyEngine {
             case "GATHER_MATERIALS":
                 String resource = actionId.replace("GATHER_", "").toLowerCase();
                 LOGGER.info("[AutonomyEngine] Gathering: {}", resource);
-                // Implementação básica: encontrar recurso mais próximo e mover até ele
-                if (context.getInventory() != null) {
-                    // Tentar encontrar bloco de recurso nas proximidades
-                    BlockPos resourcePos = findNearestResourceBlock(resource, context);
-                    if (resourcePos != null) {
-                        Vec3d targetPos = new Vec3d(resourcePos.getX() + 0.5, resourcePos.getY(), resourcePos.getZ() + 0.5);
-                        LOGGER.info("[AutonomyEngine] Moving to gather {} at {}", resource, resourcePos);
-                        moveDirectlyTo(targetPos);
-                    } else {
-                        LOGGER.warn("[AutonomyEngine] No {} source found nearby", resource);
+
+                // Check if we have a cached position for this resource
+                BlockPos resourcePos = null;
+                if (cachedResourcePos != null && resource.equals(cachedResourceType)) {
+                    // Use cached position if it's still valid
+                    double distanceToCached = bot.getBlockPos().getSquaredDistance(cachedResourcePos);
+                    if (distanceToCached < 100) { // Within ~10 blocks
+                        resourcePos = cachedResourcePos;
+                        LOGGER.debug("[AutonomyEngine] Using cached {} position", resource);
                     }
+                }
+
+                // Only scan if not cached
+                if (resourcePos == null) {
+                    // Progressive scan radius: try increasing distances (LIMITED to prevent blocking)
+                    int[] scanRadii = {16, MAX_SCAN_RADIUS}; // Removed 64 - too slow!
+
+                    for (int radius : scanRadii) {
+                        resourcePos = findNearestResourceBlock(resource, context, radius);
+                        if (resourcePos != null) {
+                            // Cache for next tick
+                            cachedResourcePos = resourcePos;
+                            cachedResourceType = resource;
+                            break;
+                        }
+                    }
+                }
+
+                if (resourcePos != null) {
+                    Vec3d targetPos = new Vec3d(resourcePos.getX() + 0.5, resourcePos.getY(), resourcePos.getZ() + 0.5);
+                    LOGGER.info("[AutonomyEngine] Moving to gather {} at {}", resource, resourcePos);
+                    moveDirectlyTo(targetPos);
+                } else {
+                    // Fallback: explore to find resources
+                    LOGGER.warn("[AutonomyEngine] No {} found nearby, exploring to locate resources", resource);
+                    Vec3d explorePos = new Vec3d(
+                        bot.getX() + (bot.getRandom().nextBetween(-24, 24)),
+                        bot.getY(),
+                        bot.getZ() + (bot.getRandom().nextBetween(-24, 24))
+                    );
+                    moveDirectlyTo(explorePos);
                 }
                 break;
 
