@@ -657,12 +657,13 @@ public class AutonomyEngine {
 
     /**
      * Direct movement fallback using Carpet Mod commands.
-     * Uses PathTracer's scheduled movement system for proper execution.
+     * Includes obstacle detection and automatic jumping.
      */
     private void moveDirectlyTo(Vec3d targetPos) {
         MinecraftServer server = bot.getServer();
         if (server == null) return;
 
+        ServerWorld world = (ServerWorld) bot.getWorld();
         Vec3d currentPos = bot.getPos();
         double dx = targetPos.x - currentPos.x;
         double dz = targetPos.z - currentPos.z;
@@ -682,27 +683,57 @@ public class AutonomyEngine {
         bot.setPitch(pitch);
 
         String botName = bot.getName().getString();
+        BlockPos botBlockPos = bot.getBlockPos();
 
         // Set movement state
         isMoving = true;
         lastMovementTime = System.currentTimeMillis();
         lastMovementTarget = new BlockPos((int) targetPos.x, (int) targetPos.y, (int) targetPos.z);
 
+        // Check for obstacles in the direction of movement
+        boolean needsJump = checkForObstacleInPath(world, botBlockPos, dx, dz, distance);
+
         // Use direct movement WITHOUT pathfinding (pathfinding blocks the tick thread!)
         // Calculate movement time based on walking speed (4.3 blocks/sec)
         double walkTime = distance / 4.317; // seconds
         long walkTimeMs = (long) (walkTime * 1000);
 
-        LOGGER.info("[AutonomyEngine] Direct movement to ({}, {}, {}) at distance {:.1f}m ({}ms)",
-            (int) targetPos.x, (int) targetPos.y, (int) targetPos.z, distance, walkTimeMs);
+        LOGGER.info("[AutonomyEngine] Direct movement to ({}, {}, {}) at distance {:.1f}m ({}ms){}",
+            (int) targetPos.x, (int) targetPos.y, (int) targetPos.z, distance, walkTimeMs,
+            needsJump ? " [JUMP NEEDED]" : "");
 
         // Start movement
         server.getCommandManager().executeWithPrefix(
             bot.getCommandSource().withSilent().withMaxLevel(4),
             "/player " + botName + " move forward");
 
-        // Schedule stop after calculated time (capped at 5 seconds)
+        // Schedule periodic jump checks during movement
         final long actualWalkTime = Math.min(walkTimeMs, 5000);
+        final long jumpCheckInterval = 400; // Check every 400ms for obstacles
+
+        // Schedule initial jump if needed
+        if (needsJump) {
+            server.getCommandManager().executeWithPrefix(
+                bot.getCommandSource().withSilent().withMaxLevel(4),
+                "/player " + botName + " jump");
+        }
+
+        // Schedule periodic jump checks during movement
+        for (int i = 1; i <= actualWalkTime / jumpCheckInterval && i <= 10; i++) {
+            final int checkNum = i;
+            scheduler.schedule(() -> {
+                if (!isMoving) return; // Don't check if movement ended
+                boolean obstacleAhead = checkForObstacleInPath(world, bot.getBlockPos(), dx, dz, distance);
+                if (obstacleAhead) {
+                    LOGGER.debug("[AutonomyEngine] Jump check #{} - obstacle detected, jumping", checkNum);
+                    server.getCommandManager().executeWithPrefix(
+                        bot.getCommandSource().withSilent().withMaxLevel(4),
+                        "/player " + botName + " jump");
+                }
+            }, i * jumpCheckInterval, TimeUnit.MILLISECONDS);
+        }
+
+        // Schedule final stop
         scheduler.schedule(() -> {
             server.getCommandManager().executeWithPrefix(
                 bot.getCommandSource().withSilent().withMaxLevel(4),
@@ -710,6 +741,48 @@ public class AutonomyEngine {
             isMoving = false;
             LOGGER.debug("[AutonomyEngine] Movement completed after {}ms", actualWalkTime);
         }, actualWalkTime, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Check if there's an obstacle in the movement path that requires jumping.
+     *
+     * @param world Server world
+     * @param botPos Current bot position
+     * @param dx X direction to target
+     * @param dz Z direction to target
+     * @param distance Distance to target
+     * @return true if a jump is needed to clear an obstacle
+     */
+    private boolean checkForObstacleInPath(ServerWorld world, BlockPos botPos, double dx, double dz, double distance) {
+        // Normalize direction
+        double dirX = dx / distance;
+        double dirZ = dz / distance;
+
+        // Check blocks ahead in movement direction (up to 3 blocks ahead)
+        for (int i = 1; i <= 3; i++) {
+            int checkX = botPos.getX() + (int) Math.round(dirX * i);
+            int checkZ = botPos.getZ() + (int) Math.round(dirZ * i);
+
+            // Check at feet level and one block up
+            BlockPos feetPos = new BlockPos(checkX, botPos.getY(), checkZ);
+            BlockPos headPos = new BlockPos(checkX, botPos.getY() + 1, checkZ);
+            BlockPos aboveHeadPos = new BlockPos(checkX, botPos.getY() + 2, checkZ);
+
+            // Check if block at feet is solid (need to jump over)
+            BlockState feetState = world.getBlockState(feetPos);
+            BlockState headState = world.getBlockState(headPos);
+
+            if (!feetState.isAir() && feetState.isSolidBlock(world, feetPos)) {
+                // There's a solid block at feet level - need to jump
+                // But first check if we can actually jump over it (is there space above?)
+                if (headState.isAir() || !headState.isSolidBlock(world, headPos)) {
+                    LOGGER.debug("[AutonomyEngine] Obstacle detected at {}, need to jump", feetPos);
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
