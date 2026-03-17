@@ -44,6 +44,12 @@ public class ManualConfig {
     private String customApiUrl = "";
     private String ollamaModel = "llama3.2"; // New: default Ollama model
     private String ollamaUrl = "http://localhost:11434"; // New: Ollama URL
+
+    // Embedding configuration (separate from LLM provider)
+    private String embeddingProvider = ""; // Empty = use same as LLM provider
+    private String embeddingModel = ""; // Empty = use default model for provider
+    private String ollamaEmbeddingModel = "nomic-embed-text"; // Default Ollama embedding model
+
     private Map<String, String> botGameProfile = new HashMap<>();
 
     /**
@@ -296,9 +302,82 @@ public class ManualConfig {
         this.ollamaUrl = ollamaUrl != null ? ollamaUrl.trim() : "http://localhost:11434";
     }
 
+    // --- Embedding configuration getters/setters ---
+
     /**
-     * Get the active provider, using config first, then falling back to system property.
-     * Replaces the need for -Daiplayer.llmMode argument.
+     * Get the embedding provider.
+     * @return "same" (use LLM provider), "ollama", "gemini", "openai", etc.
+     */
+    public String getEmbeddingProvider() {
+        return embeddingProvider != null ? embeddingProvider : "";
+    }
+
+    /**
+     * Set the embedding provider.
+     * @param embeddingProvider "same", "ollama", "gemini", "openai", etc.
+     */
+    public void setEmbeddingProvider(String embeddingProvider) {
+        this.embeddingProvider = embeddingProvider != null ? embeddingProvider.trim() : "";
+    }
+
+    /**
+     * Get the embedding model (optional override).
+     * @return Model name or empty string for default.
+     */
+    public String getEmbeddingModel() {
+        return embeddingModel != null ? embeddingModel : "";
+    }
+
+    /**
+     * Set the embedding model.
+     * @param embeddingModel Model name or empty for default.
+     */
+    public void setEmbeddingModel(String embeddingModel) {
+        this.embeddingModel = embeddingModel != null ? embeddingModel.trim() : "";
+    }
+
+    /**
+     * Get the Ollama-specific embedding model.
+     * @return Ollama embedding model name.
+     */
+    public String getOllamaEmbeddingModel() {
+        return ollamaEmbeddingModel != null && !ollamaEmbeddingModel.isEmpty() ? ollamaEmbeddingModel : "nomic-embed-text";
+    }
+
+    /**
+     * Set the Ollama embedding model.
+     * @param ollamaEmbeddingModel Model name like "nomic-embed-text" or "mxbai-embed-large".
+     */
+    public void setOllamaEmbeddingModel(String ollamaEmbeddingModel) {
+        this.ollamaEmbeddingModel = ollamaEmbeddingModel != null ? ollamaEmbeddingModel.trim() : "nomic-embed-text";
+    }
+
+    /**
+     * Get the active embedding provider.
+     * If embeddingProvider is empty or "same", returns the LLM provider.
+     * @return The embedding provider to use.
+     */
+    public static String getActiveEmbeddingProvider() {
+        try {
+            ManualConfig config = AIPlayer.CONFIG;
+            if (config != null) {
+                String embProvider = config.getEmbeddingProvider();
+                // If embedding provider is set and not "same", use it
+                if (embProvider != null && !embProvider.isEmpty() && !embProvider.equals("same")) {
+                    return embProvider;
+                }
+                // Otherwise, use the LLM provider
+                return config.getSelectedProvider();
+            }
+        } catch (Exception e) {
+            LOGGER.debug("Could not get embedding provider config, using fallback");
+        }
+        // Fallback to LLM provider
+        return getActiveProvider();
+    }
+
+    /**
+     * Get the active embedding provider, using config first, then falling back to system property.
      */
     public static String getActiveProvider() {
         try {

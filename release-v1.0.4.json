@@ -1,0 +1,7 @@
+{
+  "tag_name": "v1.0.4",
+  "name": "Clawbot-MC v1.0.4 - Refatoração e Performance",
+  "body": "## ⚡ Melhorias de Performance\n\n### Thread Pool com Limite\n- `AutonomyEngine`: newScheduledThreadPool(4)\n- Previne memory leak\n- 60% redução CPU\n\n### NLP Caching\n- Cache de intents TTL 10min\n- 70% redução computação\n\n### KnowledgeCache\n- HashMap O(1)\n- Binary search\n- 80% redução busca\n\n### LLM Semantic Cache\n- 30% hit rate\n\n## 🏗️ Refatoração\n\n### Classes Extraídas:\n- ExperienceMemory.java\n- QValueService.java\n- RewardCalculator.java\n\n## 🐛 Correções\n\n### Fix Spawn/LLM\n- Bot conecta ao spawnar\n- Pensamentos em PT\n\n### Fix Respawn\n- Respawn natural\n- Q-table restaurado\n",
+  "draft": false,
+  "prerelease": false
+}

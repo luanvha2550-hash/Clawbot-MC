@@ -7,8 +7,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Factory for creating embedding clients based on the selected LLM provider.
- * Automatically selects the appropriate embedding model for each provider.
+ * Factory for creating embedding clients based on configuration.
+ * Supports independent embedding provider selection or uses LLM provider as fallback.
+ *
+ * Configuration:
+ * - embeddingProvider: "same" (use LLM provider), "ollama", "gemini", "openai", etc.
+ * - embeddingModel: Specific model name (optional, uses default if empty)
+ * - ollamaEmbeddingModel: Ollama-specific model (default: nomic-embed-text)
  */
 public class EmbeddingClientFactory {
 
@@ -16,81 +21,128 @@ public class EmbeddingClientFactory {
     private static final String OLLAMA_HOST = "http://localhost:11434/";
     private static EmbeddingClient cachedClient = null;
     private static String cachedMode = null;
+    private static String cachedModel = null;
 
     /**
-     * Create an embedding client based on the current LLM provider configuration.
-     * Uses a singleton pattern to reuse clients when the mode hasn't changed.
+     * Create an embedding client based on configuration.
+     * Uses embeddingProvider setting, or falls back to LLM provider.
+     * Uses a singleton pattern to reuse clients when configuration hasn't changed.
      *
      * @return An EmbeddingClient instance for the configured provider
      */
     public static EmbeddingClient createClient() {
-        String mode = ManualConfig.getActiveProvider();
+        String mode = ManualConfig.getActiveEmbeddingProvider();
+        String model = getEffectiveModel(mode);
 
-        // Return cached client if mode hasn't changed
-        if (cachedClient != null && mode.equals(cachedMode)) {
+        // Return cached client if mode and model haven't changed
+        if (cachedClient != null && mode.equals(cachedMode) &&
+            (model == null ? cachedModel == null : model.equals(cachedModel))) {
             return cachedClient;
         }
 
-        EmbeddingClient client = switch (mode) {
+        LOGGER.info("Creating embedding client for provider: {} (model: {})", mode, model != null ? model : "default");
+
+        EmbeddingClient client = createClientForProvider(mode, model);
+
+        // Cache the client
+        cachedClient = client;
+        cachedMode = mode;
+        cachedModel = model;
+
+        return client;
+    }
+
+    /**
+     * Get the effective model name for the given provider.
+     */
+    private static String getEffectiveModel(String provider) {
+        String configuredModel = AIPlayer.CONFIG.getEmbeddingModel();
+        if (configuredModel != null && !configuredModel.isEmpty()) {
+            return configuredModel;
+        }
+
+        // Use provider-specific defaults
+        if ("ollama".equals(provider)) {
+            return AIPlayer.CONFIG.getOllamaEmbeddingModel();
+        }
+
+        // Return null to use default model for the provider
+        return null;
+    }
+
+    /**
+     * Create an embedding client for a specific provider.
+     */
+    private static EmbeddingClient createClientForProvider(String mode, String model) {
+        return switch (mode) {
             case "openai", "gpt" -> {
                 if (AIPlayer.CONFIG.getOpenAIKey().isEmpty()) {
-                    LOGGER.warn("OpenAI API key not set - falling back to Ollama for embeddings");
-                    yield createOllamaClient();
+                    LOGGER.warn("⚠ OpenAI API key not set - falling back to Ollama for embeddings");
+                    yield createOllamaClient(model);
                 }
-                LOGGER.info("Using OpenAI embeddings (text-embedding-3-small)");
-                yield new OpenAIEmbeddingClient(AIPlayer.CONFIG.getOpenAIKey());
+                String useModel = model != null ? model : "text-embedding-3-small";
+                LOGGER.info("Using OpenAI embeddings ({})", useModel);
+                yield new OpenAIEmbeddingClient(AIPlayer.CONFIG.getOpenAIKey(), useModel);
             }
             case "anthropic", "claude" -> {
                 if (AIPlayer.CONFIG.getClaudeKey().isEmpty()) {
-                    LOGGER.warn("Claude API key not set - falling back to Ollama for embeddings");
-                    yield createOllamaClient();
+                    LOGGER.warn("⚠ Claude API key not set - falling back to Ollama for embeddings");
+                    yield createOllamaClient(model);
                 }
                 LOGGER.info("Using Anthropic embeddings (Voyage AI)");
                 yield new AnthropicEmbeddingClient(AIPlayer.CONFIG.getClaudeKey());
             }
             case "google", "gemini" -> {
                 if (AIPlayer.CONFIG.getGeminiKey().isEmpty()) {
-                    LOGGER.warn("Gemini API key not set - falling back to Ollama for embeddings");
-                    yield createOllamaClient();
+                    LOGGER.warn("⚠ Gemini API key not set - falling back to Ollama for embeddings");
+                    yield createOllamaClient(model);
                 }
-                LOGGER.info("Using Gemini embeddings (text-embedding-004)");
-                yield new GeminiEmbeddingClient(AIPlayer.CONFIG.getGeminiKey());
+                // Use gemini-embedding-001 for Google AI Studio (text-embedding-004 is Vertex AI only)
+                String useModel = model != null ? model : "gemini-embedding-001";
+                LOGGER.info("Using Gemini embeddings ({})", useModel);
+                yield new GeminiEmbeddingClient(AIPlayer.CONFIG.getGeminiKey(), useModel);
             }
             case "xAI", "xai", "grok" -> {
                 if (AIPlayer.CONFIG.getGrokKey().isEmpty()) {
-                    LOGGER.warn("Grok API key not set - falling back to Ollama for embeddings");
-                    yield createOllamaClient();
+                    LOGGER.warn("⚠ Grok API key not set - falling back to Ollama for embeddings");
+                    yield createOllamaClient(model);
                 }
                 LOGGER.info("Using xAI embeddings (embedding-large-1)");
                 yield new GrokEmbeddingClient(AIPlayer.CONFIG.getGrokKey());
             }
             case "custom" -> {
                 if (AIPlayer.CONFIG.getCustomApiUrl().isEmpty()) {
-                    LOGGER.warn("Custom API URL not set - falling back to Ollama for embeddings");
-                    yield createOllamaClient();
+                    LOGGER.warn("⚠ Custom API URL not set - falling back to Ollama for embeddings");
+                    yield createOllamaClient(model);
                 }
-                // For custom providers, intelligently construct embedding endpoint
                 String baseUrl = AIPlayer.CONFIG.getCustomApiUrl();
                 String embeddingUrl = deriveEmbeddingEndpoint(baseUrl);
-
                 LOGGER.info("Using custom embeddings endpoint: {}", embeddingUrl);
                 yield new GenericEmbeddingClient(
                         AIPlayer.CONFIG.getCustomApiKey(),
-                        "text-embedding-3-small", // Default model name - can be overridden
+                        model != null ? model : "text-embedding-3-small",
                         embeddingUrl
                 );
             }
             default -> {
-                LOGGER.info("Using Ollama embeddings (nomic-embed-text)");
-                yield createOllamaClient();
+                LOGGER.info("Using Ollama embeddings ({})", model != null ? model : "nomic-embed-text");
+                yield createOllamaClient(model);
             }
         };
+    }
 
-        // Cache the client
-        cachedClient = client;
-        cachedMode = mode;
-
-        return client;
+    /**
+     * Create an Ollama embedding client.
+     *
+     * @param model Model name, or null for default
+     * @return An OllamaEmbeddingClient instance
+     */
+    private static OllamaEmbeddingClient createOllamaClient(String model) {
+        String useModel = model != null ? model : AIPlayer.CONFIG.getOllamaEmbeddingModel();
+        if (useModel == null || useModel.isEmpty()) {
+            useModel = "nomic-embed-text";
+        }
+        return new OllamaEmbeddingClient(new OllamaAPI(OLLAMA_HOST), useModel);
     }
 
     /**
@@ -100,64 +152,7 @@ public class EmbeddingClientFactory {
      * @return An EmbeddingClient instance for the specified provider
      */
     public static EmbeddingClient createClient(String mode) {
-        return switch (mode) {
-            case "openai", "gpt" -> {
-                if (AIPlayer.CONFIG.getOpenAIKey().isEmpty()) {
-                    LOGGER.error("OpenAI API key not set!");
-                    yield null;
-                }
-                yield new OpenAIEmbeddingClient(AIPlayer.CONFIG.getOpenAIKey());
-            }
-            case "anthropic", "claude" -> {
-                if (AIPlayer.CONFIG.getClaudeKey().isEmpty()) {
-                    LOGGER.error("Claude API key not set!");
-                    yield null;
-                }
-                yield new AnthropicEmbeddingClient(AIPlayer.CONFIG.getClaudeKey());
-            }
-            case "google", "gemini" -> {
-                if (AIPlayer.CONFIG.getGeminiKey().isEmpty()) {
-                    LOGGER.error("Gemini API key not set!");
-                    yield null;
-                }
-                yield new GeminiEmbeddingClient(AIPlayer.CONFIG.getGeminiKey());
-            }
-            case "xAI", "xai", "grok" -> {
-                if (AIPlayer.CONFIG.getGrokKey().isEmpty()) {
-                    LOGGER.error("Grok API key not set!");
-                    yield null;
-                }
-                yield new GrokEmbeddingClient(AIPlayer.CONFIG.getGrokKey());
-            }
-            case "custom" -> {
-                if (AIPlayer.CONFIG.getCustomApiUrl().isEmpty()) {
-                    LOGGER.error("Custom API URL not set!");
-                    yield null;
-                }
-                String baseUrl = AIPlayer.CONFIG.getCustomApiUrl();
-                String embeddingUrl = deriveEmbeddingEndpoint(baseUrl);
-
-                LOGGER.info("Derived custom embeddings endpoint: {}", embeddingUrl);
-                yield new GenericEmbeddingClient(
-                        AIPlayer.CONFIG.getCustomApiKey(),
-                        "text-embedding-3-small",
-                        embeddingUrl
-                );
-            }
-            default -> {
-                LOGGER.info("Defaulting to Ollama embedding client");
-                yield createOllamaClient();
-            }
-        };
-    }
-
-    /**
-     * Create an Ollama embedding client.
-     *
-     * @return An OllamaEmbeddingClient instance
-     */
-    private static OllamaEmbeddingClient createOllamaClient() {
-        return new OllamaEmbeddingClient(new OllamaAPI(OLLAMA_HOST));
+        return createClientForProvider(mode, null);
     }
 
     /**
@@ -208,6 +203,7 @@ public class EmbeddingClientFactory {
     public static void clearCache() {
         cachedClient = null;
         cachedMode = null;
+        cachedModel = null;
         LOGGER.info("Embedding client cache cleared");
     }
 
@@ -244,11 +240,23 @@ public class EmbeddingClientFactory {
      */
     public static void validateConfiguration() {
         try {
-            String mode = ManualConfig.getActiveProvider();
+            String mode = ManualConfig.getActiveEmbeddingProvider();
+            String embeddingProviderSetting = AIPlayer.CONFIG.getEmbeddingProvider();
+
             LOGGER.info("═══════════════════════════════════════════════════════");
             LOGGER.info("🔧 Validating Embedding Configuration");
             LOGGER.info("═══════════════════════════════════════════════════════");
-            LOGGER.info("Selected LLM Provider: {}", mode);
+            LOGGER.info("Embedding Provider Setting: {}", embeddingProviderSetting.isEmpty() ? "(same as LLM)" : embeddingProviderSetting);
+            LOGGER.info("LLM Provider: {}", ManualConfig.getActiveProvider());
+            LOGGER.info("Effective Embedding Provider: {}", mode);
+
+            // Check API keys
+            if ((mode.equals("gemini") || mode.equals("google")) && AIPlayer.CONFIG.getGeminiKey().isEmpty()) {
+                LOGGER.warn("⚠ Gemini API key not configured - will fall back to Ollama");
+            }
+            if (mode.equals("openai") && AIPlayer.CONFIG.getOpenAIKey().isEmpty()) {
+                LOGGER.warn("⚠ OpenAI API key not configured - will fall back to Ollama");
+            }
 
             EmbeddingClient client = createClient();
             if (client == null) {
@@ -267,6 +275,11 @@ public class EmbeddingClientFactory {
                 LOGGER.info("✅ Embedding service is operational");
             } else {
                 LOGGER.warn("⚠ Embedding service is not reachable - embeddings may fail at runtime");
+                if (mode.equals("ollama")) {
+                    LOGGER.info("   To fix: Run 'ollama serve' and 'ollama pull nomic-embed-text'");
+                } else if (mode.equals("gemini") || mode.equals("google")) {
+                    LOGGER.info("   To fix: Verify your Gemini API key is correct");
+                }
             }
 
             LOGGER.info("═══════════════════════════════════════════════════════");
@@ -295,4 +308,3 @@ public class EmbeddingClientFactory {
         }
     }
 }
-

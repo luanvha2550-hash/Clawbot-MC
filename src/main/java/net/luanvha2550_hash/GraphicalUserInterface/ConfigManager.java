@@ -86,10 +86,10 @@ public class ConfigManager extends Screen {
 
         // Botões estilizados
         int buttonY = this.height - 60;
-        int buttonWidth = 110;
+        int buttonWidth = 85;
         int buttonHeight = 24;
-        int spacing = 15;
-        int totalWidth = buttonWidth * 4 + spacing * 3;
+        int spacing = 10;
+        int totalWidth = buttonWidth * 5 + spacing * 4;
         int buttonsStartX = centerX - totalWidth / 2;
 
         // Botão Chaves API
@@ -97,18 +97,23 @@ public class ConfigManager extends Screen {
             (btn) -> Objects.requireNonNull(this.client).setScreen(new APIKeysScreen(Text.of("Chaves API"), this)));
         this.addDrawableChild(apiKeysButton);
 
+        // Botão Embeddings (novo)
+        ButtonWidget embeddingButton = createStyledButton("Embeddings", buttonsStartX + buttonWidth + spacing, buttonY, buttonWidth, buttonHeight,
+            (btn) -> Objects.requireNonNull(this.client).setScreen(new EmbeddingConfigScreen(Text.of("Embeddings"), this)));
+        this.addDrawableChild(embeddingButton);
+
         // Botão Log de Raciocínio
-        ButtonWidget reasoningButton = createStyledButton("Log", buttonsStartX + buttonWidth + spacing, buttonY, buttonWidth, buttonHeight,
+        ButtonWidget reasoningButton = createStyledButton("Log", buttonsStartX + (buttonWidth + spacing) * 2, buttonY, buttonWidth, buttonHeight,
             (btn) -> Objects.requireNonNull(this.client).setScreen(new ReasoningLogScreen(this)));
         this.addDrawableChild(reasoningButton);
 
         // Botão Atualizar
-        ButtonWidget reloadButton = createStyledButton("🔄 Atualizar", buttonsStartX + (buttonWidth + spacing) * 2, buttonY, buttonWidth, buttonHeight,
+        ButtonWidget reloadButton = createStyledButton("🔄 Atualizar", buttonsStartX + (buttonWidth + spacing) * 3, buttonY, buttonWidth, buttonHeight,
             (btn) -> this.reloadModels());
         this.addDrawableChild(reloadButton);
 
         // Botão Salvar (destaque)
-        ButtonWidget saveButton = createPrimaryButton("Salvar", buttonsStartX + (buttonWidth + spacing) * 3, buttonY, buttonWidth, buttonHeight,
+        ButtonWidget saveButton = createPrimaryButton("Salvar", buttonsStartX + (buttonWidth + spacing) * 4, buttonY, buttonWidth, buttonHeight,
             (btn) -> this.saveToFile());
         this.addDrawableChild(saveButton);
 

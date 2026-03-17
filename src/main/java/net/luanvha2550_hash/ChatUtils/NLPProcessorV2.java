@@ -1,62 +1,41 @@
 package net.luanvha2550_hash.ChatUtils;
 
-import ai.djl.MalformedModelException;
-import ai.djl.Model;
-import ai.djl.inference.Predictor;
-import ai.djl.modality.nlp.DefaultVocabulary;
-import ai.djl.modality.nlp.Vocabulary;
-import ai.djl.modality.nlp.bert.BertTokenizer;
-import ai.djl.ndarray.NDArray;
-import ai.djl.ndarray.NDList;
-import ai.djl.ndarray.NDManager;
-import ai.djl.ndarray.types.DataType;
-import ai.djl.repository.zoo.Criteria;
-import ai.djl.repository.zoo.ZooModel;
-import ai.djl.translate.Batchifier;
-import ai.djl.translate.TranslateException;
-import ai.djl.translate.Translator;
-import ai.djl.translate.TranslatorContext;
-import net.fabricmc.loader.api.FabricLoader;
-import net.luanvha2550_hash.AIPlayer;
+import net.luanvha2550_hash.FilingSystem.EmbeddingClientFactory;
+import net.luanvha2550_hash.ServiceLLMClients.EmbeddingClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * NLP Processor v2 - Sistema de processamento de linguagem natural otimizado.
+ * NLP Processor v2 - Sistema de processamento de linguagem natural.
  *
- * Substitui o sistema anterior (BERT+CART+LIDSNet) por um único modelo de embeddings
- * all-MiniLM-L6-v2 via DJL, que é 3x mais rápido e suporta português brasileiro.
+ * Usa embeddings via API (Gemini, OpenAI, Ollama, etc.) para classificar intents.
+ * Substitui o sistema DJL local por chamadas de API configuráveis.
  *
  * Características:
- * - Embedding único (~10ms)
+ * - Embedding via API (configurável pelo usuário)
  * - Classificação de intents por similaridade de cosseno
- * - Suporte nativo a 50+ idiomas incluindo pt-BR
- * - ~80MB (vs ~100MB dos modelos anteriores)
+ * - Suporte nativo a português brasileiro
+ * - Cache de embeddings para performance
  */
 public class NLPProcessorV2 {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("NLPProcessorV2");
 
-    // Modelo de embeddings all-MiniLM-L6-v2 (multilíngue, 384 dimensões)
-    private static final String EMBEDDING_MODEL_URL = "https://djl-ai.s3.amazonaws.com/model-repo/nlp/sentence_embedding/ai/djl/pytorch/all-MiniLM-L6-v2/0.0.1/all-MiniLM-L6-v2.zip";
-    private static final int EMBEDDING_DIMENSION = 384;
+    // Dimensão padrão para embeddings (será atualizada pelo provider real)
+    private static final int DEFAULT_EMBEDDING_DIMENSION = 768;
 
     // Thresholds de confiança
     private static final double HIGH_CONFIDENCE = 0.75;
     private static final double MEDIUM_CONFIDENCE = 0.60;
     private static final double LOW_CONFIDENCE = 0.40;
 
-    // Modelo e predictor
-    private static ZooModel<String, float[]> embeddingModel;
-    private static Predictor<String, float[]> embeddingPredictor;
+    // Cliente de embedding (via API)
+    private static EmbeddingClient embeddingClient;
     private static boolean initialized = false;
+    private static int embeddingDimension = DEFAULT_EMBEDDING_DIMENSION;
 
     // Cache de embeddings para intents conhecidas
     private static final Map<Intent, List<float[]>> intentEmbeddings = new HashMap<>();
@@ -130,35 +109,63 @@ public class NLPProcessorV2 {
     }
 
     /**
-     * Inicializa o modelo de embeddings.
+     * Inicializa o sistema de embeddings usando o provedor configurado.
      * Deve ser chamado uma vez durante o startup.
      */
     public static void initialize() {
         try {
             LOGGER.info("Inicializando NLPProcessorV2...");
 
-            // Carregar modelo de embeddings
-            Criteria<String, float[]> criteria = Criteria.builder()
-                .setTypes(String.class, float[].class)
-                .optModelUrls(EMBEDDING_MODEL_URL)
-                .optTranslator(new SentenceEmbeddingTranslator())
-                .optEngine("PyTorch")
-                .build();
+            // Mostrar qual provider está configurado
+            String provider = net.luanvha2550_hash.FilingSystem.ManualConfig.getActiveProvider();
+            LOGGER.info("   Provider configurado: {}", provider);
 
-            embeddingModel = criteria.loadModel();
-            embeddingPredictor = embeddingModel.newPredictor();
+            // Obter cliente de embedding configurado
+            embeddingClient = EmbeddingClientFactory.createClient();
+
+            if (embeddingClient == null) {
+                LOGGER.error("❌ Falha ao criar cliente de embedding!");
+                LOGGER.error("   Verifique se o provider '{}' está configurado corretamente", provider);
+                LOGGER.error("   Para Gemini: configure 'geminiKey' no arquivo settings.json5");
+                LOGGER.error("   Para Ollama: verifique se Ollama está rodando em localhost:11434");
+                initialized = false;
+                return;
+            }
+
+            LOGGER.info("   Cliente criado: {} - {}", embeddingClient.getProvider(), embeddingClient.getEmbeddingModel());
+
+            // Verificar se o cliente está acessível
+            if (!embeddingClient.isReachable()) {
+                LOGGER.warn("⚠ Cliente de embedding não está acessível: {}", embeddingClient.getProvider());
+                if (provider.equals("gemini") || provider.equals("google")) {
+                    LOGGER.warn("   Verifique se a API key do Gemini está correta");
+                } else if (provider.equals("ollama")) {
+                    LOGGER.warn("   Verifique se o Ollama está rodando: ollama serve");
+                }
+                LOGGER.warn("   NLPProcessorV2 funcionará em modo degradado (fallback de palavras-chave)");
+                initialized = false;
+                return;
+            }
+
+            // Obter dimensão do embedding
+            embeddingDimension = embeddingClient.getEmbeddingDimension();
+
+            LOGGER.info("✅ Cliente de embedding configurado: {} ({})",
+                embeddingClient.getProvider(), embeddingClient.getEmbeddingModel());
 
             // Pré-computar embeddings dos exemplos de treinamento
             precomputeIntentEmbeddings();
 
             LOGGER.info("✅ NLPProcessorV2 inicializado com sucesso!");
-            LOGGER.info("   Modelo: all-MiniLM-L6-v2 ({} dimensões)", EMBEDDING_DIMENSION);
+            LOGGER.info("   Modelo: {} ({} dimensões)", embeddingClient.getEmbeddingModel(), embeddingDimension);
             LOGGER.info("   Intents treinadas: {}", trainingExamples.size());
             initialized = true;
 
         } catch (Exception e) {
-            LOGGER.error("❌ Falha ao inicializar NLPProcessorV2: {}", e.getMessage(), e);
-            throw new RuntimeException("NLP initialization failed", e);
+            LOGGER.error("❌ Falha ao inicializar NLPProcessorV2: {}", e.getMessage());
+            LOGGER.error("   Verifique se a API key está configurada corretamente");
+            LOGGER.error("   O sistema funcionará sem classificação de intents");
+            initialized = false;
         }
     }
 
@@ -173,16 +180,65 @@ public class NLPProcessorV2 {
     /**
      * Pré-computa os embeddings para todos os exemplos de treinamento.
      */
-    private static void precomputeIntentEmbeddings() throws TranslateException {
+    private static void precomputeIntentEmbeddings() {
+        int successCount = 0;
+        int failCount = 0;
+
         for (Map.Entry<Intent, List<String>> entry : trainingExamples.entrySet()) {
             List<float[]> embeddings = new ArrayList<>();
             for (String example : entry.getValue()) {
-                float[] embedding = embeddingPredictor.predict(example);
-                embeddings.add(embedding);
+                try {
+                    float[] embedding = getEmbedding(example);
+                    if (embedding != null && embedding.length > 0) {
+                        embeddings.add(embedding);
+                        successCount++;
+                    }
+                } catch (Exception e) {
+                    LOGGER.warn("Falha ao gerar embedding para '{}': {}", example, e.getMessage());
+                    failCount++;
+                }
             }
-            intentEmbeddings.put(entry.getKey(), embeddings);
+            if (!embeddings.isEmpty()) {
+                intentEmbeddings.put(entry.getKey(), embeddings);
+            }
         }
-        LOGGER.info("✅ Embeddings pré-computados para {} intents", intentEmbeddings.size());
+
+        LOGGER.info("✅ Embeddings pré-computados: {} sucesso, {} falhas", successCount, failCount);
+
+        if (failCount > successCount) {
+            LOGGER.error("❌ Muitas falhas ao gerar embeddings - verifique a conexão com a API");
+        }
+    }
+
+    /**
+     * Obtém embedding do cache ou computa via API.
+     */
+    private static float[] getEmbedding(String text) throws Exception {
+        if (embeddingClient == null) {
+            throw new IllegalStateException("Embedding client não inicializado");
+        }
+
+        String key = text.toLowerCase().trim();
+
+        // Verificar cache primeiro
+        float[] cached = embeddingCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+
+        // Gerar embedding via API
+        List<Double> embeddingList = embeddingClient.generateEmbedding(text);
+
+        // Converter para float[]
+        float[] embedding = new float[embeddingList.size()];
+        for (int i = 0; i < embeddingList.size(); i++) {
+            embedding[i] = embeddingList.get(i).floatValue();
+        }
+
+        // Armazenar no cache
+        embeddingCache.put(key, embedding);
+
+        return embedding;
     }
 
     /**
@@ -196,6 +252,11 @@ public class NLPProcessorV2 {
             return new ClassificationResult(Intent.UNSPECIFIED, 0.0);
         }
 
+        // Se não inicializado, usar fallback simples
+        if (!initialized || embeddingClient == null) {
+            return classifyIntentFallback(message);
+        }
+
         // Verificar cache de intents primeiro
         String cacheKey = normalizeCacheKey(message);
         CachedIntent cached = intentCache.get(cacheKey);
@@ -207,8 +268,8 @@ public class NLPProcessorV2 {
         try {
             long startTime = System.currentTimeMillis();
 
-            // Gerar ou recuperar embedding da mensagem
-            float[] messageEmbedding = getEmbeddingFromCache(message);
+            // Gerar embedding da mensagem
+            float[] messageEmbedding = getEmbedding(message);
 
             // Calcular similaridade com cada intent
             Map<Intent, Double> similarities = new HashMap<>();
@@ -247,25 +308,60 @@ public class NLPProcessorV2 {
 
             return result;
 
-        } catch (TranslateException e) {
+        } catch (Exception e) {
             LOGGER.error("Erro ao classificar intent: {}", e.getMessage());
-            return new ClassificationResult(Intent.UNSPECIFIED, 0.0);
+            return classifyIntentFallback(message);
         }
     }
 
     /**
-     * Obtém embedding do cache ou computa e armazena.
+     * Fallback para classificação de intent quando embedding não está disponível.
+     * Usa correspondência de palavras-chave simples.
      */
-    private static float[] getEmbeddingFromCache(String message) throws TranslateException {
-        String key = normalizeCacheKey(message);
-        float[] cached = embeddingCache.get(key);
-        if (cached != null) {
-            return cached;
+    private static ClassificationResult classifyIntentFallback(String message) {
+        String lower = message.toLowerCase().trim();
+
+        // REQUEST_ACTION - Comandos diretos
+        if (containsAny(lower, "mine", "minerar", "minera", "cave", "cavar", "cava",
+            "venha", "vem", "segue", "pegue", "pega", "colete", "coleta", "busque", "busca",
+            "ataque", "ataca", "mata", "mate", "construa", "constrói", "faça", "faz",
+            "crafte", "crafta", "plante", "planta", "colha", "colhe", "quebre", "quebra")) {
+            return new ClassificationResult(Intent.REQUEST_ACTION, 0.6);
         }
 
-        float[] embedding = embeddingPredictor.predict(message.toLowerCase());
-        embeddingCache.put(key, embedding);
-        return embedding;
+        // ASK_INFORMATION - Perguntas
+        if (containsAny(lower, "onde", "que horas", "que hora", "que dia", "como faz",
+            "como faço", "qual é", "quanto", "quantos", "quem é", "o que é", "por que")) {
+            return new ClassificationResult(Intent.ASK_INFORMATION, 0.6);
+        }
+
+        // GENERAL_CONVERSATION - Conversas casuais
+        if (containsAny(lower, "oi", "olá", "eae", "fala", "salve", "bom dia",
+            "boa tarde", "boa noite", "tudo bem", "tudo bom", "como vai", "beleza",
+            "obrigado", "valeu", "vlw", "legal", "massa", "daora", "show", "top")) {
+            return new ClassificationResult(Intent.GENERAL_CONVERSATION, 0.6);
+        }
+
+        // COMPLEX_ACTION - Ações complexas
+        if (containsAny(lower, "construa uma", "faça uma", "monte uma", "crie uma",
+            "farm", "automatize", "organize", "poção", "encant", "explore", "encontre",
+            "domestique", "crie animais")) {
+            return new ClassificationResult(Intent.COMPLEX_ACTION, 0.6);
+        }
+
+        return new ClassificationResult(Intent.UNSPECIFIED, 0.0);
+    }
+
+    /**
+     * Verifica se a string contém qualquer uma das palavras-chave.
+     */
+    private static boolean containsAny(String text, String... keywords) {
+        for (String keyword : keywords) {
+            if (text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -299,21 +395,22 @@ public class NLPProcessorV2 {
      * Libera recursos ao desligar.
      */
     public static void shutdown() {
-        if (embeddingPredictor != null) {
-            embeddingPredictor.close();
-        }
-        if (embeddingModel != null) {
-            embeddingModel.close();
-        }
         intentCache.clear();
         embeddingCache.clear();
-        LOGGER.info("NLPProcessorV2 desligado.");
+        intentEmbeddings.clear();
+        embeddingClient = null;
+        initialized = false;
+        LOGGER.info("NLPProcessorV2 desligado com sucesso");
     }
 
     /**
      * Calcula a similaridade de cosseno entre dois vetores.
      */
     private static double cosineSimilarity(float[] vec1, float[] vec2) {
+        if (vec1 == null || vec2 == null || vec1.length != vec2.length) {
+            return 0.0;
+        }
+
         double dotProduct = 0.0;
         double norm1 = 0.0;
         double norm2 = 0.0;
@@ -357,6 +454,45 @@ public class NLPProcessorV2 {
     }
 
     /**
+     * Obtém informações sobre o estado do NLPProcessorV2.
+     */
+    public static String getStatusInfo() {
+        String provider = net.luanvha2550_hash.FilingSystem.ManualConfig.getActiveProvider();
+
+        if (!initialized) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("§c=== NLP Status ===\n");
+            sb.append("§cInitialized: false\n");
+            sb.append("§7Provider config: ").append(provider).append("\n");
+
+            // Verificar razão da falha
+            if (embeddingClient == null) {
+                sb.append("§7Reason: Cliente de embedding não criado\n");
+                if (provider.equals("gemini") || provider.equals("google")) {
+                    sb.append("§7Action: Configure 'geminiKey' em settings.json5\n");
+                } else if (provider.equals("ollama")) {
+                    sb.append("§7Action: Execute 'ollama serve' e 'ollama pull nomic-embed-text'\n");
+                }
+            } else {
+                sb.append("§7Reason: ").append(embeddingClient.getProvider()).append(" não acessível\n");
+                sb.append("§7Model: ").append(embeddingClient.getEmbeddingModel()).append("\n");
+                if (provider.equals("ollama")) {
+                    sb.append("§7Action: Verifique se Ollama está rodando\n");
+                }
+            }
+            sb.append("§eFallback: Classificação por palavras-chave ativa");
+            return sb.toString();
+        }
+
+        return String.format("§a=== NLP Status ===\n§7Initialized: true\n§7Provider: %s\n§7Model: %s\n§7Dimensions: %d\n§7Intents: %d\n§7Cache size: %d",
+            embeddingClient.getProvider(),
+            embeddingClient.getEmbeddingModel(),
+            embeddingDimension,
+            intentEmbeddings.size(),
+            intentCache.size());
+    }
+
+    /**
      * Resultado da classificação de intent.
      */
     public static class ClassificationResult {
@@ -387,85 +523,6 @@ public class NLPProcessorV2 {
         CachedIntent(ClassificationResult result, long timestamp) {
             this.result = result;
             this.timestamp = timestamp;
-        }
-    }
-
-    /**
-     * Translator para gerar embeddings de sentenças.
-     */
-    private static class SentenceEmbeddingTranslator implements Translator<String, float[]> {
-
-        private BertTokenizer tokenizer;
-
-        @Override
-        public void prepare(TranslatorContext ctx) throws Exception {
-            // Tokenizer é carregado automaticamente pelo modelo
-        }
-
-        @Override
-        public NDList processInput(TranslatorContext ctx, String input) {
-            NDManager manager = ctx.getNDManager();
-
-            // Tokenizar input
-            String[] tokens = tokenize(input);
-
-            // Criar tensores de input
-            long[] inputIds = new long[tokens.length + 2]; // +2 para [CLS] e [SEP]
-            long[] attentionMask = new long[tokens.length + 2];
-
-            inputIds[0] = 101; // [CLS]
-            attentionMask[0] = 1;
-
-            for (int i = 0; i < tokens.length; i++) {
-                inputIds[i + 1] = getTokenId(tokens[i]);
-                attentionMask[i + 1] = 1;
-            }
-
-            inputIds[tokens.length + 1] = 102; // [SEP]
-            attentionMask[tokens.length + 1] = 1;
-
-            NDArray inputIdsArray = manager.create(inputIds).expandDims(0);
-            NDArray attentionMaskArray = manager.create(attentionMask).expandDims(0);
-
-            return new NDList(inputIdsArray, attentionMaskArray);
-        }
-
-        @Override
-        public float[] processOutput(TranslatorContext ctx, NDList list) {
-            // Extrair embedding da camada [CLS] (primeira posição)
-            NDArray embeddings = list.get(0);
-            float[] result = embeddings.get(0).toFloatArray();
-
-            // Normalizar vetor (L2 norm)
-            double norm = 0.0;
-            for (float v : result) {
-                norm += v * v;
-            }
-            norm = Math.sqrt(norm);
-
-            if (norm > 0) {
-                for (int i = 0; i < result.length; i++) {
-                    result[i] /= norm;
-                }
-            }
-
-            return result;
-        }
-
-        @Override
-        public Batchifier getBatchifier() {
-            return Batchifier.STACK;
-        }
-
-        private String[] tokenize(String text) {
-            // Tokenização simples por palavras
-            return text.toLowerCase().trim().split("\\s+");
-        }
-
-        private long getTokenId(String token) {
-            // Mapeamento simplificado - em produção usar vocab do modelo
-            // Por enquanto retorna hash do token
-            return Math.abs(token.hashCode()) % 30000 + 100;
         }
     }
 }

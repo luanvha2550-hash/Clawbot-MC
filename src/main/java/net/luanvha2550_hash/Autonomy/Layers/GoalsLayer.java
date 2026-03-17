@@ -293,6 +293,12 @@ public class GoalsLayer implements DecisionLayer {
         // Determine best tool tier available
         int bestTier = determineBestToolTier(inventory);
 
+        // If no materials at all, default to wood gathering
+        if (bestTier < 0) {
+            LOGGER.info("[Goals] No materials found, defaulting to wood gathering");
+            bestTier = 0; // Wood tier
+        }
+
         if (bestTier == 0) {
             // Need to gather materials first
             steps.add(new GoalStep("GATHER_WOOD",
@@ -302,11 +308,12 @@ public class GoalsLayer implements DecisionLayer {
             steps.add(new GoalStep("CRAFT_TOOLS",
                 "Craft basic wooden tools", 2));
         } else {
-            // Can craft better tools
-            steps.add(new GoalStep("GATHER_MATERIALS",
-                "Gather " + getTierMaterialName(bestTier) + " for tools", 1));
+            // Can craft better tools - use specific resource type
+            String material = getTierMaterialName(bestTier);
+            steps.add(new GoalStep("GATHER_" + material.toUpperCase(),
+                "Gather " + material + " for tools", 1));
             steps.add(new GoalStep("CRAFT_TOOLS",
-                "Craft " + getTierMaterialName(bestTier) + " tools", 2));
+                "Craft " + material + " tools", 2));
         }
 
         return new Goal(
@@ -327,10 +334,16 @@ public class GoalsLayer implements DecisionLayer {
 
         int tier = determineBestWeaponTier(inventory);
 
-        steps.add(new GoalStep("GATHER_MATERIALS",
-            "Gather " + getTierMaterialName(tier) + " for weapon", 1));
+        // Default to wood if no materials
+        if (tier < 0) {
+            tier = 0;
+        }
+
+        String material = getTierMaterialName(tier);
+        steps.add(new GoalStep("GATHER_" + material.toUpperCase(),
+            "Gather " + material + " for weapon", 1));
         steps.add(new GoalStep("CRAFT_WEAPON",
-            "Craft " + getTierMaterialName(tier) + " weapon", 2));
+            "Craft " + material + " weapon", 2));
 
         return new Goal(
             UUID.randomUUID().toString(),
@@ -351,10 +364,16 @@ public class GoalsLayer implements DecisionLayer {
         int tier = Math.max(1, inventory.getBestArmorTier() + 1);
         tier = Math.min(tier, determineMaxArmorTier(inventory));
 
-        steps.add(new GoalStep("GATHER_MATERIALS",
-            "Gather " + getTierMaterialName(tier) + " for armor", 1));
+        // Ensure tier is valid (at least 1 for leather/basic armor)
+        if (tier < 1) {
+            tier = 1;
+        }
+
+        String material = getArmorMaterialName(tier);
+        steps.add(new GoalStep("GATHER_" + material.toUpperCase(),
+            "Gather " + material + " for armor", 1));
         steps.add(new GoalStep("CRAFT_ARMOR",
-            "Craft " + getTierMaterialName(tier) + " armor pieces", 2));
+            "Craft " + material + " armor pieces", 2));
 
         return new Goal(
             UUID.randomUUID().toString(),
@@ -775,15 +794,31 @@ public class GoalsLayer implements DecisionLayer {
 
     /**
      * Get the material name for a tier.
+     * For tools/weapons: 0=wood, 1=stone, 2=iron, 3=diamond, 4=netherite
+     * For armor: 1=leather (no wood/stone armor)
      */
     private String getTierMaterialName(int tier) {
         return switch (tier) {
             case 0 -> "wood";
-            case 1 -> "stone";
+            case 1 -> "stone";  // For tools
             case 2 -> "iron";
             case 3 -> "diamond";
             case 4 -> "netherite";
-            default -> "unknown";
+            default -> "wood";  // Default to wood instead of unknown
+        };
+    }
+
+    /**
+     * Get the material name for armor tier.
+     * Armor tiers are different from tool tiers.
+     */
+    private String getArmorMaterialName(int tier) {
+        return switch (tier) {
+            case 1 -> "leather";
+            case 2 -> "iron";
+            case 3 -> "diamond";
+            case 4 -> "netherite";
+            default -> "leather";  // Default to leather
         };
     }
 

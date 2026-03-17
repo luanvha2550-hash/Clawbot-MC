@@ -1,5 +1,6 @@
 package net.luanvha2550_hash.Autonomy;
 
+import net.minecraft.block.BlockState;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.mob.HostileEntity;
 import net.minecraft.item.ItemStack;
@@ -427,6 +428,50 @@ public class AutonomyEngine {
     }
 
     /**
+     * Find nearest resource block based on resource type.
+     *
+     * @param resourceType Resource type (wood, stone, iron, coal, diamond, etc.)
+     * @param context Current autonomy context
+     * @return BlockPos of nearest resource, or null if not found
+     */
+    private BlockPos findNearestResourceBlock(String resourceType, AutonomyContext context) {
+        ServerWorld world = (ServerWorld) bot.getWorld();
+        BlockPos botPos = bot.getBlockPos();
+        int scanRadius = 16; // Scan within 16 blocks
+
+        // Define block types to search for based on resource
+        List<String> targetBlocks = switch (resourceType) {
+            case "wood" -> List.of("log", "wood", "leaves");
+            case "stone" -> List.of("stone", "cobblestone", "andesite", "diorite", "granite");
+            case "iron" -> List.of("iron_ore", "raw_iron_block", "iron_block");
+            case "coal" -> List.of("coal_ore", "coal_block", "deepslate_coal_ore");
+            case "diamond" -> List.of("diamond_ore", "deepslate_diamond_ore");
+            case "gold" -> List.of("gold_ore", "deepslate_gold_ore", "raw_gold_block");
+            case "copper" -> List.of("copper_ore", "deepslate_copper_ore", "raw_copper_block");
+            default -> List.of(resourceType);
+        };
+
+        // Scan blocks in radius
+        for (int x = -scanRadius; x <= scanRadius; x++) {
+            for (int y = -scanRadius; y <= scanRadius; y++) {
+                for (int z = -scanRadius; z <= scanRadius; z++) {
+                    BlockPos checkPos = botPos.add(x, y, z);
+                    BlockState state = world.getBlockState(checkPos);
+                    String blockName = state.getBlock().getTranslationKey().toLowerCase();
+
+                    for (String target : targetBlocks) {
+                        if (blockName.contains(target)) {
+                            return checkPos;
+                        }
+                    }
+                }
+            }
+        }
+
+        return null; // No resource found
+    }
+
+    /**
      * Dynamically find the nearest player to follow.
      * This is used when no owner has been explicitly set.
      *
@@ -705,9 +750,21 @@ public class AutonomyEngine {
             case "GATHER_WOOD":
             case "GATHER_STONE":
             case "GATHER_ORE":
+            case "GATHER_MATERIALS":
                 String resource = actionId.replace("GATHER_", "").toLowerCase();
                 LOGGER.info("[AutonomyEngine] Gathering: {}", resource);
-                // Usar pathfinding para encontrar recurso
+                // Implementação básica: encontrar recurso mais próximo e mover até ele
+                if (context.getInventory() != null) {
+                    // Tentar encontrar bloco de recurso nas proximidades
+                    BlockPos resourcePos = findNearestResourceBlock(resource, context);
+                    if (resourcePos != null) {
+                        Vec3d targetPos = new Vec3d(resourcePos.getX() + 0.5, resourcePos.getY(), resourcePos.getZ() + 0.5);
+                        LOGGER.info("[AutonomyEngine] Moving to gather {} at {}", resource, resourcePos);
+                        moveDirectlyTo(targetPos);
+                    } else {
+                        LOGGER.warn("[AutonomyEngine] No {} source found nearby", resource);
+                    }
+                }
                 break;
 
             case "CRAFT_ITEM":

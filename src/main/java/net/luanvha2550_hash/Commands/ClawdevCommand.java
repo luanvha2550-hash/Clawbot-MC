@@ -194,9 +194,7 @@ public class ClawdevCommand {
 
         StringBuilder info = new StringBuilder();
         info.append("§9=== NLP Status ===\n");
-        info.append("Initialized: ").append(NLPProcessorV2.isInitialized()).append("\n");
-        info.append("Model: all-MiniLM-L6-v2 (384 dims)\n");
-        info.append("Intents: REQUEST_ACTION, ASK_INFORMATION, GENERAL_CONVERSATION, COMPLEX_ACTION, UNSPECIFIED\n");
+        info.append(NLPProcessorV2.getStatusInfo());
 
         source.sendMessage(Text.literal(info.toString()));
         return 1;
