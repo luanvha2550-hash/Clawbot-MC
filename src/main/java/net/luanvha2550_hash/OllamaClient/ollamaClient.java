@@ -40,7 +40,8 @@ public class ollamaClient {
     public static boolean isInitialized = false;
     public static String initialResponse = "";
     public static final OllamaAPI ollamaAPI = new OllamaAPI(host);
-    private static final Pattern THINK_BLOCK = Pattern.compile("<think>([\\s\\S]*?)</think>");
+    // Suporta tanto tags em português quanto em inglês para compatibilidade
+    private static final Pattern THINK_BLOCK = Pattern.compile("(?:<think>|<pensamento>)([\\s\\S]*?)(?:</think>|</pensamento>)");
     private static final ExecutorService BOT_TASK_POOL = Executors.newCachedThreadPool();
 
     public static void runFromChat(String botName, String message, UUID playerUUID) {

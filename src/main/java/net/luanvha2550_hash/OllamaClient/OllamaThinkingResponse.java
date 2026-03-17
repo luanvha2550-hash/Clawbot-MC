@@ -29,11 +29,11 @@ public class OllamaThinkingResponse {
 
     /**
      * Gets the full response combining thinking and content
-     * Formats it in <think></think> tags for compatibility with existing code
+     * Formats it in <pensamento> tags for compatibility with existing code
      */
     public String getFullResponse() {
         if (hasThinking) {
-            return "<think>\n" + thinking + "\n</think>\n" + content;
+            return "<pensamento>\n" + thinking + "\n</pensamento>\n" + content;
         }
         return content;
     }

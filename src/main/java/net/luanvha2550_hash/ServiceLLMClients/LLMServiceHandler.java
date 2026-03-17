@@ -29,7 +29,8 @@ import java.util.regex.Pattern;
 public class LLMServiceHandler {
     public static final Logger LOGGER = LoggerFactory.getLogger("LLMServiceHandler");
     private static final ExecutorService BOT_TASK_POOL = Executors.newCachedThreadPool();
-    private static final Pattern THINK_BLOCK = Pattern.compile("<think>([\\s\\S]*?)</think>");
+    // Suporta tanto tags em português quanto em inglês para compatibilidade
+    private static final Pattern THINK_BLOCK = Pattern.compile("(?:<think>|<pensamento>)([\\s\\S]*?)(?:</think>|</pensamento>)");
     public static String initialResponse = "";
     private static final String host = "http://localhost:11434";
     public static final OllamaAPI ollamaAPI = new OllamaAPI(host);
