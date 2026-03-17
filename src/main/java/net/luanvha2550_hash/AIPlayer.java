@@ -141,10 +141,16 @@ public class AIPlayer implements ModInitializer {
 
 		});
 
+        // Handler de morte - captura causa e salva estado
         ServerLivingEntityEvents.AFTER_DEATH.register((entity, damageSource) -> {
             if (entity instanceof ServerPlayerEntity serverPlayer) {
                 if (BotEventHandler.bot != null && serverPlayer.getUuid().equals(BotEventHandler.bot.getUuid())) {
-                    // Save state first
+                    // Extrair causa da morte e salvar no handler (Minecraft 1.21.1 - getName() retorna String)
+                    String deathCause = damageSource.getName();
+                    BotEventHandler.lastDeathCause = deathCause;
+                    LOGGER.info("💀 Bot morreu por: {}", deathCause);
+
+                    // Salvar estado primeiro
                     QTableStorage.saveLastKnownState(BotEventHandler.getCurrentState(), BotEventHandler.qTableDir + "/lastKnownState.bin");
 
                     try {
@@ -158,6 +164,9 @@ public class AIPlayer implements ModInitializer {
                         // Trigger death learning
                         BotEventHandler.handleBotDeath(qTable, tempAgent);
 
+                        // Set death flag
+                        BotEventHandler.botDied = true;
+
                     } catch (Exception e) {
                         LOGGER.error("Error during death learning trigger: ", e);
                     }
@@ -165,15 +174,23 @@ public class AIPlayer implements ModInitializer {
             }
         });
 
-		ServerPlayerEvents.AFTER_RESPAWN.register((oldPlayer, newPlayer, alive) -> {
-			// Check if the respawned player is the bot
-			if (oldPlayer instanceof ServerPlayerEntity && newPlayer instanceof ServerPlayerEntity && oldPlayer.getName().getString().equals(newPlayer.getName().getString())) {
-				System.out.println("Bot has respawned. Updating state...");
-				BotEventHandler.hasRespawned = true;
-				BotEventHandler.botSpawnCount++;
+        // Handler de respawn - re-inicializa autonomia e restaura estado
+        ServerPlayerEvents.AFTER_RESPAWN.register((oldPlayer, newPlayer, alive) -> {
+            // Check if the respawned player is the bot
+            if (BotEventHandler.bot != null &&
+                oldPlayer.getUuid().equals(BotEventHandler.bot.getUuid()) &&
+                newPlayer instanceof ServerPlayerEntity) {
 
-			}
-		});
+                LOGGER.info("✨ Bot respawned! old={}, new={}, alive={}",
+                    oldPlayer.getName().getString(),
+                    newPlayer.getName().getString(),
+                    alive);
+
+                // Re-inicializar autonomia e restaurar estado
+                BotEventHandler.handleBotRespawn((ServerPlayerEntity) newPlayer,
+                    BotEventHandler.lastDeathCause != null ? BotEventHandler.lastDeathCause : "unknown");
+            }
+        });
 
 		// Player retaliation tracking - track hits on bot players
 		ServerLivingEntityEvents.ALLOW_DAMAGE.register((entity, source, amount) -> {

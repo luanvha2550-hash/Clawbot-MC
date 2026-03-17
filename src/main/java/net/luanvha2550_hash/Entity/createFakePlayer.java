@@ -277,7 +277,9 @@ public class createFakePlayer extends ServerPlayerEntity {
         super.onDeath(cause);
         setHealth(20);
         this.hungerManager = new HungerManager();
-        kill(this.getDamageTracker().getDeathMessage());
+        // NÃO chamar kill() aqui - permite que o ciclo natural de respawn do Minecraft proceda
+        // O bot será respawnado automaticamente pelo evento AFTER_RESPAWN
+        LOGGER.info("Bot morreu por: {}. Aguardando respawn...", cause.getName());
     }
 
     @Override

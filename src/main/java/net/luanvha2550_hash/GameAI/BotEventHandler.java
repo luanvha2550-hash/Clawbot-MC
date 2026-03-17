@@ -45,6 +45,15 @@ import net.luanvha2550_hash.Autonomy.Cache.KnowledgeCache;
 import net.luanvha2550_hash.Autonomy.Memory.LongTermMemory;
 import net.luanvha2550_hash.Autonomy.Alert.AlertSystem;
 
+// LLM imports
+import net.luanvha2550_hash.AIPlayer;
+import net.luanvha2550_hash.OllamaClient.ollamaClient;
+import net.luanvha2550_hash.ServiceLLMClients.LLMClient;
+import net.luanvha2550_hash.ServiceLLMClients.LLMServiceHandler;
+import net.luanvha2550_hash.FilingSystem.LLMClientFactory;
+
+import java.util.concurrent.CompletableFuture;
+
 
 public class BotEventHandler {
     public static final Logger LOGGER = LoggerFactory.getLogger("ai-player");
@@ -57,6 +66,7 @@ public class BotEventHandler {
     private static final double DEFAULT_RISK_APPETITE = 0.5; // Default value upon respawn
     public static boolean botDied = false; // Flag to track if the bot died
     public static boolean hasRespawned = false; // flag to track if the bot has respawned before or not
+    public static String lastDeathCause = null; // Last death cause for respawn handling
 
     // ForkJoinPool for parallel synchronous computation (uses all CPU cores efficiently)
     private static final java.util.concurrent.ForkJoinPool parallelComputePool =
@@ -99,6 +109,8 @@ public class BotEventHandler {
 
     /**
      * Handle bot death - learn from the sequence of actions that led to death
+     * @param qTable The Q-table for RL learning
+     * @param rlAgent The RL agent wrapper
      */
     public static void handleBotDeath(QTable qTable, RLAgent rlAgent) {
         LOGGER.info("💀 Bot died - analyzing death sequence for learning...");
@@ -112,6 +124,58 @@ public class BotEventHandler {
                 LOGGER.error("Error during death learning", e);
             }
         });
+    }
+
+    /**
+     * Handle bot respawn - re-initialize autonomy and restore state after death
+     * @param newPlayer The new player entity after respawn
+     * @param deathCause The cause of death (for memory logging)
+     */
+    public static void handleBotRespawn(ServerPlayerEntity newPlayer, String deathCause) {
+        LOGGER.info("✨ Bot respawning - re-initializing autonomy system...");
+
+        try {
+            // 1. Atualizar referência estática do bot
+            bot = newPlayer;
+            String botName = newPlayer.getName().getString();
+            LOGGER.info("Bot reference updated to: {}", botName);
+
+            // 2. Re-inicializar autonomia
+            initializeAutonomy(newPlayer);
+            LOGGER.info("AutonomyEngine re-initialized for respawned bot");
+
+            // 3. Registrar death spot na memória (se causa disponível)
+            if (deathCause != null && !deathCause.isEmpty()) {
+                LongTermMemory memory = LongTermMemory.getInstance();
+                Vec3d deathPos = newPlayer.getPos(); // Posição atual (próxima ao death spot)
+                memory.recordDeath(deathPos, deathCause);
+                LOGGER.info("Death spot registrado: causa={}, posição=({}, {}, {})",
+                    deathCause, deathPos.x, deathPos.y, deathPos.z);
+            }
+
+            // 4. Restaurar Q-table se disponível
+            QTable qTable = QTableStorage.loadQTable();
+            if (qTable != null) {
+                LOGGER.info("Q-table restaurada com {} state-action pairs", qTable.getTable().size());
+            } else {
+                LOGGER.warn("Q-table não disponível, criando nova");
+            }
+
+            // 5. Resetar flags
+            botDied = false;
+            hasRespawned = true;
+            botSpawnCount++;
+
+            // 6. Enviar mensagem de status
+            if (newPlayer.getServer() != null) {
+                newPlayer.getServer().sendMessage(Text.of("§9[Clawbot] §7Bot §f" + botName + " §7respawnado com sucesso!"));
+            }
+
+            LOGGER.info("✅ Respawn completo - bot pronto para operar");
+
+        } catch (Exception e) {
+            LOGGER.error("❌ Erro ao processar respawn do bot: {}", e.getMessage(), e);
+        }
     }
 
     /**
@@ -1782,6 +1846,7 @@ public class BotEventHandler {
         try {
             // Set the static bot reference first
             BotEventHandler.bot = bot;
+            String botName = bot.getName().getString();
 
             LongTermMemory memory = LongTermMemory.getInstance();
             KnowledgeCache cache = KnowledgeCache.getInstance();
@@ -1801,12 +1866,63 @@ public class BotEventHandler {
             autonomyEngine.start();
             LOGGER.info("AutonomyEngine initialized for bot: {}", bot.getName().getString());
 
+            // Initialize LLM client and send initial response
+            initializeLLMConnection(bot);
+
             // Send message to server chat
             if (bot.getServer() != null) {
                 bot.getServer().sendMessage(Text.of("§9[Clawbot] §7Bot §f" + bot.getName().getString() + " §7iniciado em modo autônomo!"));
             }
         } catch (Exception e) {
             LOGGER.error("Failed to initialize AutonomyEngine", e);
+        }
+    }
+
+    /**
+     * Initialize LLM connection and send initial response.
+     * Supports Ollama (default) and other providers via LLMClientFactory.
+     * @param bot The bot entity
+     */
+    private static void initializeLLMConnection(ServerPlayerEntity bot) {
+        String botName = bot.getName().getString();
+        String llmMode = AIPlayer.CONFIG.getLlmMode();
+        ServerCommandSource botSource = bot.getCommandSource().withSilent().withMaxLevel(4);
+
+        LOGGER.info("Inicializando conexão LLM para {} (modo: {})", botName, llmMode);
+
+        // Usar Ollama como default (mais comum para usuários locais)
+        if ("ollama".equalsIgnoreCase(llmMode)) {
+            // Inicializar cliente Ollama usando o método existente
+            net.luanvha2550_hash.OllamaClient.ollamaClient.botName = botName;
+            CompletableFuture.runAsync(() -> {
+                try {
+                    // Verificar se Ollama está acessível
+                    if (net.luanvha2550_hash.OllamaClient.ollamaClient.pingOllamaServer()) {
+                        // Chamar initializeOllamaClient para buscar resposta inicial
+                        net.luanvha2550_hash.OllamaClient.ollamaClient.initializeOllamaClient();
+                        LOGGER.info("✅ Conexão LLM (Ollama) inicializada para {}", botName);
+                    } else {
+                        LOGGER.warn("⚠ Ollama não está acessível. Bot funcionará sem LLM.");
+                        botSource.sendMessage(Text.of("§e[Clawbot] ⚠ Ollama não está acessível. Bot funcionará apenas com autonomia local."));
+                    }
+                } catch (Exception e) {
+                    LOGGER.error("❌ Erro ao inicializar Ollama: {}", e.getMessage(), e);
+                }
+            });
+        } else {
+            // Tentar usar LLMClientFactory para outros providers
+            try {
+                net.luanvha2550_hash.ServiceLLMClients.LLMClient client =
+                    net.luanvha2550_hash.FilingSystem.LLMClientFactory.createClient(llmMode);
+                if (client != null) {
+                    net.luanvha2550_hash.ServiceLLMClients.LLMServiceHandler.sendInitialResponse(botSource, client);
+                    LOGGER.info("✅ Conexão LLM ({}) inicializada para {}", llmMode, botName);
+                } else {
+                    LOGGER.warn("⚠ LLMClientFactory retornou null para modo: {}", llmMode);
+                }
+            } catch (Exception e) {
+                LOGGER.error("❌ Erro ao inicializar LLM {}: {}", llmMode, e.getMessage(), e);
+            }
         }
     }
 

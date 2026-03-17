@@ -263,6 +263,13 @@ public class ollamaClient {
                         LOGGER.info("💭 Modelo forneceu pensamento: {} chars", response.getThinking().length());
                     }
 
+                    // ✅ Enviar resposta inicial no chat
+                    ServerPlayerEntity bot = server.getPlayerManager().getPlayer(botName);
+                    if (bot != null) {
+                        ServerCommandSource botSource = bot.getCommandSource().withSilent().withMaxLevel(4);
+                        sendInitialResponse(botSource);
+                    }
+
                     server.execute(() ->
                             server.sendMessage(Text.of("§9" + botName + " está pronto!"))
                     );
