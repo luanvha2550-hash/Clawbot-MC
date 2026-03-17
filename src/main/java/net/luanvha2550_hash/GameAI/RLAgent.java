@@ -37,9 +37,9 @@ public class RLAgent {
 
     // RLAgent v2: Priority Queue de experiências
     private static final int MAX_EXPERIENCES = 1000;
-    private static final int SAMPLE_SIZE = 32; // Mini-batch size
+    private static final int SAMPLE_SIZE = 32;
     private final PriorityQueue<Experience> experienceMemory;
-    private final List<Experience> experienceBuffer; // Buffer temporário
+    private final List<Experience> experienceBuffer;
 
 
     /**
@@ -47,12 +47,10 @@ public class RLAgent {
      */
 
     public RLAgent() {
-        this.epsilon = 1.0; // Initial exploration rate
+        this.epsilon = 1.0;
         qTable = new QTable();
         random = new Random();
-        transitionHistory = new StateTransition.TransitionHistory(100); // Track last 100 transitions
-
-        // RLAgent v2: Inicializar memória de experiências
+        transitionHistory = new StateTransition.TransitionHistory(100);
         this.experienceMemory = new PriorityQueue<>();
         this.experienceBuffer = new ArrayList<>();
     }
@@ -67,9 +65,7 @@ public class RLAgent {
         this.epsilon = epsilon;
         this.qTable = customQTable != null ? customQTable : new QTable();
         random = new Random();
-        transitionHistory = new StateTransition.TransitionHistory(100); // Track last 100 transitions
-
-        // RLAgent v2: Inicializar memória de experiências
+        transitionHistory = new StateTransition.TransitionHistory(100);
         this.experienceMemory = new PriorityQueue<>();
         this.experienceBuffer = new ArrayList<>();
     }
@@ -2072,115 +2068,69 @@ public class RLAgent {
 
     // ========== RLAgent v2: Métodos de Memória de Experiências ==========
 
-    /**
-     * Adiciona uma experiência à memória.
-     */
     public void addExperience(Experience experience) {
-        // Adicionar ao buffer temporário
         experienceBuffer.add(experience);
-
-        // Quando buffer atinge tamanho, processar para priority queue
         if (experienceBuffer.size() >= 10) {
             flushExperienceBuffer();
         }
     }
 
-    /**
-     * Processa o buffer de experiências para a priority queue.
-     */
     private void flushExperienceBuffer() {
         for (Experience exp : experienceBuffer) {
-            // Evitar duplicatas (experiências muito similares)
             boolean isDuplicate = experienceMemory.stream()
                 .anyMatch(e -> e.isSimilarTo(exp, 0.95));
-
             if (!isDuplicate) {
                 experienceMemory.offer(exp);
             }
         }
-
-        // Limpar buffer
         experienceBuffer.clear();
-
-        // Manter apenas MAX_EXPERIENCES na memória
         while (experienceMemory.size() > MAX_EXPERIENCES) {
-            experienceMemory.poll(); // Remove de menor prioridade
+            experienceMemory.poll();
         }
     }
 
-    /**
-     * Seleciona experiências para aprendizado (prioridade + amostragem aleatória).
-     */
     public List<Experience> sampleExperiences() {
         flushExperienceBuffer();
-
         if (experienceMemory.isEmpty()) {
             return new ArrayList<>();
         }
-
         List<Experience> samples = new ArrayList<>();
-
-        // 70% das amostras: top prioridade
         int prioritySamples = (int) (SAMPLE_SIZE * 0.7);
         PriorityQueue<Experience> tempQueue = new PriorityQueue<>(experienceMemory);
-
         for (int i = 0; i < prioritySamples && !tempQueue.isEmpty(); i++) {
             samples.add(tempQueue.poll());
         }
-
-        // 30%: amostragem aleatória para diversidade
         int randomSamples = SAMPLE_SIZE - samples.size();
         List<Experience> allExperiences = new ArrayList<>(experienceMemory);
         Collections.shuffle(allExperiences);
-
         for (int i = 0; i < randomSamples && i < allExperiences.size(); i++) {
             Experience randomExp = allExperiences.get(i);
             if (!samples.contains(randomExp)) {
                 samples.add(randomExp);
             }
         }
-
         return samples;
     }
 
-    /**
-     * Aprende de uma experiência específica (Q-learning com experience replay).
-     */
     public void learnFromExperience(Experience exp) {
         StateActionPair sap = new StateActionPair(exp.state, exp.action);
-
         double currentQ = qTable.getQValue(sap);
         double maxNextQ = getMaxQValue(exp.nextState);
-
-        // Q-learning update
         double newQ = currentQ + ALPHA * (exp.reward + GAMMA * maxNextQ - currentQ);
         qTable.update(sap, newQ);
-
-        // Atualizar prioridade baseada no erro TD
         double tdError = Math.abs(exp.reward + GAMMA * maxNextQ - currentQ);
         exp.updatePriority(tdError);
     }
 
-    /**
-     * Executa aprendizado de lote a partir das experiências amostradas.
-     */
     public void learnFromBatch() {
         List<Experience> batch = sampleExperiences();
-
-        if (batch.isEmpty()) {
-            return;
-        }
-
+        if (batch.isEmpty()) return;
         LOGGER.info("Aprendendo de {} experiências", batch.size());
-
         for (Experience exp : batch) {
             learnFromExperience(exp);
         }
     }
 
-    /**
-     * Retorna métricas da memória de experiências.
-     */
     public ExperienceMetrics getExperienceMetrics() {
         flushExperienceBuffer();
         return new ExperienceMetrics(
@@ -2191,15 +2141,11 @@ public class RLAgent {
         );
     }
 
-    /**
-     * Limpa a memória de experiências.
-     */
     public void clearExperienceMemory() {
         experienceMemory.clear();
         experienceBuffer.clear();
     }
 
-    // Classe para métricas
     public static class ExperienceMetrics {
         public final int totalExperiences;
         public final int bufferSize;
