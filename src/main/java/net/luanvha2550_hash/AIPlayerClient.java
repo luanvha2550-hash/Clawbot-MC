@@ -42,7 +42,7 @@ public class AIPlayerClient implements ClientModInitializer {
         try {
             botProfiles = GSON.fromJson(Files.newBufferedReader(BOT_PROFILE_PATH), JsonObject.class);
         } catch (IOException e) {
-            System.out.println("Bot profiles not found yet — continuing with no bots registered.");
+            System.out.println("Perfil de Bot não encontrado ainda — continuando sem bots registrados.");
             botProfiles = null; // Explicitly fallback to safe null
         }
     }
@@ -126,23 +126,23 @@ public class AIPlayerClient implements ClientModInitializer {
 
 
 
-            System.out.println("Raw message: " + rawMessage);
+            System.out.println("Mensagem bruta: " + rawMessage);
 
             // ✅ Loop protection layer 1: Ignore commands
             if (rawMessage.startsWith("/")) {
-                System.out.println("Command detected, skipping....");
+                System.out.println("Comando detectado, ignorando...");
                 return;
             }
 
             // ✅ Loop protection layer 2: Ignore if message has bot prefix
             if (isMessageFromBot(rawMessage)) {
-                System.out.println("Bot's own message detected by prefix, skipping...");
+                System.out.println("Mensagem do próprio bot detectada pelo prefixo, ignorando...");
                 return;
             }
 
             // ✅ Loop protection layer 3: Ignore server system messages that mention a bot name
             if (isMessageFromServerContainsBotName(rawMessage)) {
-                System.out.println("Server system message mentioning bot detected, skipping...");
+                System.out.println("Mensagem de sistema do servidor mencionando bot detectada, ignorando...");
                 return;
             }
 
@@ -167,10 +167,10 @@ public class AIPlayerClient implements ClientModInitializer {
                 if (botName == null || botName.isEmpty()) {
                     botName = getBotNameIfMentioned(rawMessage);
                 }
-                System.out.println("[Debug] Using botName: " + botName);
+                System.out.println("[Debug] Usando botName: " + botName);
 
                 if (botName == null) {
-                    System.out.println("No bot name resolved for clarification! Skipping NLP call to prevent crash.");
+                    System.out.println("Nome do bot não resolvido para clarificação! Ignorando chamada NLP para prevenir crash.");
                 } else {
 
                     switch (llmProvider) {
@@ -211,37 +211,37 @@ public class AIPlayerClient implements ClientModInitializer {
         ClientSendMessageEvents.CHAT.register((message) -> {
             MinecraftClient client = MinecraftClient.getInstance();
 
-            System.out.println("Outgoing message: " + message);
+            System.out.println("Mensagem de saída: " + message);
 
             UUID playerUUID = net.minecraft.client.MinecraftClient.getInstance().player.getUuid();
 
             // Skip outgoing if it's a command
             if (message.startsWith("/")) {
-                System.out.println("Outgoing command detected, skipping NLP...");
+                System.out.println("Comando de saída detectado, ignorando NLP...");
                 return;
             }
 
             // If we’re waiting for clarification, don’t handle it here — let receive do it
             if (ChatContextManager.isAwaitingClarification(playerUUID)) {
-                System.out.println("Awaiting clarification — skipping outgoing NLP trigger.");
+                System.out.println("Aguardando clarificação — ignorando trigger NLP de saída.");
                 return;
             }
 
             // NEW: Prevent spoofing server messages
             if (isMessageFromServerContainsBotName(message)) {
-                System.out.println("Outgoing message spoofing server with bot name detected — skipping NLP...");
+                System.out.println("Mensagem de saída falsificando servidor com nome de bot detectada — ignorando NLP...");
                 return;
             }
 
 
             if (isMessageFromBot(message)) {
-                System.out.println("Bot's own message detected by prefix, skipping...");
+                System.out.println("Mensagem do próprio bot detectada pelo prefixo, ignorando...");
                 return;
             }
 
             // Normal mention-based flow
             String botName = getBotNameIfMentioned(message);
-            System.out.println("Mentioned bot name: " + botName);
+            System.out.println("Nome do bot mencionado: " + botName);
             if (botName != null) {
 
                 switch (llmProvider) {
@@ -252,9 +252,9 @@ public class AIPlayerClient implements ClientModInitializer {
                             LLMServiceHandler.runFromChat(message, botName, playerUUID, llmClient);
                         }
                         else {
-                            LOGGER.error("Error! Returned client is null! Cannot proceed!");
+                            LOGGER.error("Erro! Cliente retornado é nulo! Não é possível prosseguir!");
                             client.getToastManager().add(
-                                    SystemToast.create(client, SystemToast.Type.CHUNK_LOAD_FAILURE, Text.of("LLM Client factory error."), Text.of("Error! Returned client is null! Cannot proceed!"))
+                                    SystemToast.create(client, SystemToast.Type.CHUNK_LOAD_FAILURE, Text.of("Erro na fábrica de LLM Client."), Text.of("Erro! Cliente retornado é nulo! Não é possível prosseguir!"))
                             );
                         }
                         break;
@@ -264,9 +264,9 @@ public class AIPlayerClient implements ClientModInitializer {
                         break;
 
                     default:
-                        LOGGER.warn("Unsupported provider detected. Defaulting to Ollama client");
+                        LOGGER.warn("Provedor não suportado detectado. Usando Ollama como padrão");
                         client.getToastManager().add(
-                                SystemToast.create(client, SystemToast.Type.NARRATOR_TOGGLE, Text.of("Invalid LLM Client."), Text.of("Unsupported provider detected. Defaulting to Ollama client"))
+                                SystemToast.create(client, SystemToast.Type.NARRATOR_TOGGLE, Text.of("LLM Client Inválido."), Text.of("Provedor não suportado detectado. Usando Ollama como padrão"))
                         );
                         ollamaClient.runFromChat(botName, message, playerUUID);
                         break;

@@ -11,9 +11,11 @@ import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 import net.luanvha2550_hash.AIPlayer;
+import net.luanvha2550_hash.AIProviders.LLMDecisionEngine;
 import net.luanvha2550_hash.ChatUtils.ChatUtils;
 import net.luanvha2550_hash.ChatUtils.Helper.RAG2;
 import net.luanvha2550_hash.ChatUtils.NLPProcessor;
+import net.luanvha2550_hash.ChatUtils.NLPProcessorV2;
 import net.luanvha2550_hash.Database.SQLiteDB;
 import net.luanvha2550_hash.Exception.intentMisclassification;
 import net.luanvha2550_hash.FunctionCaller.FunctionCallerV2;
@@ -45,7 +47,7 @@ public class ollamaClient {
         MinecraftServer server = AIPlayer.serverInstance;
         ServerPlayerEntity bot = server.getPlayerManager().getPlayer(botName);
         if (bot == null) {
-            LOGGER.error("Bot {} not online.", botName);
+            LOGGER.error("Bot {} não está online.", botName);
             return;
         }
         ServerCommandSource botSource = bot.getCommandSource().withSilent().withMaxLevel(4);
@@ -55,7 +57,7 @@ public class ollamaClient {
                 routeIntent(message, botSource, playerUUID);
             } catch (Exception e) {
                 LOGGER.error("Chat processing error: ", e);
-                ChatUtils.sendChatMessages(botSource, "⚠️ I'm confused! Please report this.");
+                ChatUtils.sendChatMessages(botSource, "⚠️ Estou confuso! Por favor, reporte isso.");
             }
         });
     }
@@ -73,7 +75,7 @@ public class ollamaClient {
 
         server.execute(() -> {
             server.getCommandManager().executeWithPrefix(playerSource, "/say " + formatter + message);
-            server.getCommandManager().executeWithPrefix(botSource, "/say Processing your message, please wait.");
+            server.getCommandManager().executeWithPrefix(botSource, "/say Processando sua mensagem, aguarde.");
         });
 
         server.execute(() -> {
@@ -81,39 +83,67 @@ public class ollamaClient {
                 routeIntent(message, botSource, Objects.requireNonNull(playerSource.getPlayer()).getUuid());
             } catch (Exception e) {
                 LOGGER.error("NLP error: ", e);
-                ChatUtils.sendChatMessages(botSource, "⚠️ NLP issue. Report to developer.");
+                ChatUtils.sendChatMessages(botSource, "⚠️ Problema no NLP. Reporte ao desenvolvedor.");
             }
         });
     }
 
     private static void routeIntent(String message, ServerCommandSource botSource, UUID playerUUID) throws Exception {
-        NLPProcessor.Intent intent = NLPProcessor.getIntention(message);
+        // Usar NLPProcessorV2 com fallback para NLP antigo
+        NLPProcessorV2.ClassificationResult classification;
+        try {
+            classification = NLPProcessorV2.classifyIntent(message);
+            LOGGER.info("📨 NLPProcessorV2 intent: {} (confiança: {:.2f})",
+                classification.intent, classification.confidence);
+        } catch (Exception e) {
+            LOGGER.warn("NLPProcessorV2 falhou, usando fallback: {}", e.getMessage());
+            // Fallback para NLP antigo
+            NLPProcessor.Intent oldIntent = NLPProcessor.getIntention(message);
+            classification = new NLPProcessorV2.ClassificationResult(
+                convertIntent(oldIntent), 0.5);
+        }
+
+        // Usar LLMDecisionEngine para decidir se chama LLM
+        boolean useLLM = LLMDecisionEngine.shouldUseLLM(message, classification);
+        if (useLLM) {
+            LOGGER.debug("LLMDecisionEngine: usar LLM = true");
+        }
+
+        NLPProcessorV2.Intent intent = classification.intent;
+        // Se confiança baixa e é conversa, usar LLM para classificação
+        if (!classification.isHighConfidence() && intent == NLPProcessorV2.Intent.UNSPECIFIED) {
+            NLPProcessor.Intent retryOld = retryIntentLLM(message);
+            intent = convertIntent(retryOld);
+        }
 
         LOGGER.info("📨 Received intent: {}", intent);
+
+        // Converter para Intent antigo para compatibilidade com RAG2
+        NLPProcessor.Intent oldIntent = convertIntentToOld(intent);
 
         switch (intent) {
             case GENERAL_CONVERSATION, ASK_INFORMATION -> {
                 BOT_TASK_POOL.submit(() -> {
                     Thread.currentThread().setName("RAG2-Worker");
-                    LOGGER.info("🧵 Started RAG2 worker thread");
-                    RAG2.run(message, botSource, intent);
-                    LOGGER.info("✅ Finished RAG2 worker thread");
+                    LOGGER.info("🧵 Thread worker RAG2 iniciada");
+                    RAG2.run(message, botSource, oldIntent);
+                    LOGGER.info("✅ Thread worker RAG2 finalizada");
                 });
             }
 
             case REQUEST_ACTION -> {
                 BOT_TASK_POOL.submit(() -> {
                     Thread.currentThread().setName("Function-Caller-Worker");
-                    LOGGER.info("🧵 Started FunctionCallerV2 worker thread");
+                    LOGGER.info("🧵 Thread worker FunctionCallerV2 iniciada");
                     new FunctionCallerV2(botSource, playerUUID);
                     FunctionCallerV2.run(message);
-                    LOGGER.info("✅ Finished FunctionCallerV2 worker thread");
+                    LOGGER.info("✅ Thread worker FunctionCallerV2 finalizada");
                 });
             }
 
             default -> {
-                LOGGER.warn("⚠️ Intent unclear, retrying with LLM classification...");
-                ChatUtils.sendChatMessages(botSource, "🔍 Reanalyzing...");
+                LOGGER.warn("⚠️ Intento unclear, tentando novamente com classificação LLM...");
+                ChatUtils.sendChatMessages(botSource, "🔍 Reanalisando...");
 
                 NLPProcessor.Intent retry = retryIntentLLM(message);
 
@@ -122,17 +152,17 @@ public class ollamaClient {
                 if (retry == NLPProcessor.Intent.GENERAL_CONVERSATION || retry == NLPProcessor.Intent.ASK_INFORMATION) {
                     BOT_TASK_POOL.submit(() -> {
                         Thread.currentThread().setName("RAG2-Retry-Worker");
-                        LOGGER.info("🧵 Started RAG2 retry worker thread");
+                        LOGGER.info("🧵 Thread worker retry RAG2 iniciada");
                         RAG2.run(message, botSource, retry);
-                        LOGGER.info("✅ Finished RAG2 retry worker thread");
+                        LOGGER.info("✅ Thread worker retry RAG2 finalizada");
                     });
                 } else if (retry == NLPProcessor.Intent.REQUEST_ACTION) {
                     BOT_TASK_POOL.submit(() -> {
                         Thread.currentThread().setName("Function-Caller-Retry-Worker");
-                        LOGGER.info("🧵 Started FunctionCallerV2 retry worker thread");
+                        LOGGER.info("🧵 Thread worker retry FunctionCallerV2 iniciada");
                         new FunctionCallerV2(botSource, playerUUID);
                         FunctionCallerV2.run(message);
-                        LOGGER.info("✅ Finished FunctionCallerV2 retry worker thread");
+                        LOGGER.info("✅ Thread worker retry FunctionCallerV2 finalizada");
                     });
                 } else {
                     throw new intentMisclassification("LLM failed to classify intent.");
@@ -141,7 +171,33 @@ public class ollamaClient {
         }
     }
 
+    /**
+     * Converte Intent antigo para novo NLPProcessorV2
+     */
+    private static NLPProcessorV2.Intent convertIntent(NLPProcessor.Intent oldIntent) {
+        return switch (oldIntent) {
+            case REQUEST_ACTION -> NLPProcessorV2.Intent.REQUEST_ACTION;
+            case ASK_INFORMATION -> NLPProcessorV2.Intent.ASK_INFORMATION;
+            case GENERAL_CONVERSATION -> NLPProcessorV2.Intent.GENERAL_CONVERSATION;
+            default -> NLPProcessorV2.Intent.UNSPECIFIED;
+        };
+    }
+
+    /**
+     * Converte Intent novo para antigo (para compatibilidade com RAG2)
+     */
+    private static NLPProcessor.Intent convertIntentToOld(NLPProcessorV2.Intent newIntent) {
+        return switch (newIntent) {
+            case REQUEST_ACTION -> NLPProcessor.Intent.REQUEST_ACTION;
+            case ASK_INFORMATION -> NLPProcessor.Intent.ASK_INFORMATION;
+            case GENERAL_CONVERSATION -> NLPProcessor.Intent.GENERAL_CONVERSATION;
+            case COMPLEX_ACTION -> NLPProcessor.Intent.REQUEST_ACTION;
+            default -> NLPProcessor.Intent.UNSPECIFIED;
+        };
+    }
+
     private static NLPProcessor.Intent retryIntentLLM(String message) {
+        // Usar LLM diretamente para classificação
         return NLPProcessor.getIntentionFromLLM(message);
     }
 
@@ -155,14 +211,14 @@ public class ollamaClient {
         try {
             boolean reachable = ollamaAPI.ping();
             if (reachable) {
-                LOGGER.info("✓ Ollama server is alive and responding");
+                LOGGER.info("✓ Servidor Ollama está ativo e respondendo");
             } else {
-                LOGGER.warn("⚠ Ollama server ping returned false");
+                LOGGER.warn("⚠ Ping do servidor Ollama retornou falso");
             }
             return reachable;
         } catch (Exception e) {
-            LOGGER.warn("⚠ Ollama server is not reachable: {}. AI chat features will be unavailable.", e.getMessage());
-            LOGGER.info("Please ensure Ollama is installed and running on localhost:11434");
+            LOGGER.warn("⚠ Servidor Ollama não está acessível: {}. Recursos de chat AI estarão indisponíveis.", e.getMessage());
+            LOGGER.info("Verifique se o Ollama está instalado e rodando em localhost:11434");
             return false;
         }
     }
@@ -178,7 +234,7 @@ public class ollamaClient {
 
         ollamaAPI.setRequestTimeoutSeconds(90);
         String selectedLM = AIPlayer.CONFIG.getSelectedLanguageModel();
-        LOGGER.info("Connecting to Ollama using model: {}", selectedLM);
+        LOGGER.info("Conectando ao Ollama usando modelo: {}", selectedLM);
 
         CompletableFuture.runAsync(() -> {
             int retries = 0;
@@ -200,10 +256,10 @@ public class ollamaClient {
                     );
 
                     initialResponse = response.getFullResponse();
-                    LOGGER.info("Ollama Client initialized. Initial response: {}", response.getContent());
+                    LOGGER.info("Cliente Ollama inicializado. Resposta inicial: {}", response.getContent());
 
                     if (response.hasThinking()) {
-                        LOGGER.info("💭 Model provided thinking: {} chars", response.getThinking().length());
+                        LOGGER.info("💭 Modelo forneceu pensamento: {} chars", response.getThinking().length());
                     }
 
                     server.execute(() ->
@@ -215,15 +271,15 @@ public class ollamaClient {
 
                 } catch (HttpTimeoutException e) {
                     retries++;
-                    LOGGER.error("Timeout initializing Ollama (attempt {}/3)", retries);
+                    LOGGER.error("Timeout ao inicializar Ollama (tentativa {}/3)", retries);
                 } catch (Exception e) {
-                    LOGGER.error("Failed initializing Ollama: {}", e.getMessage(), e);
+                    LOGGER.error("Falha ao inicializar Ollama: {}", e.getMessage(), e);
                     throw new RuntimeException(e);
                 }
             }
 
             if (!success) {
-                LOGGER.error("Failed to initialize Ollama after 3 attempts.");
+                LOGGER.error("Falha ao inicializar Ollama após 3 tentativas.");
                 server.sendMessage(Text.of("§c§lNão foi possível estabelecer conexão."));
             }
         });
@@ -232,36 +288,36 @@ public class ollamaClient {
     private static String generateSystemPrompt() {
 
         return
-                "You are a Minecraft player named " + botName + " who is connected to Minecraft using a mod. You exist within the Minecraft world and can interact with the player and the environment just like any other player in the game. Your job is to engage in conversations with the player, respond to their questions, offer help, and provide information about the game. Address the player directly and appropriately, responding to their name or as 'Player' if their name is not known. Do not refer to the player as " + botName + ", only address yourself as " + botName + " Keep your responses relevant to Minecraft and make sure to stay in character as a helpful and knowledgeable assistant within the game."
+                "Você é um jogador de Minecraft chamado " + botName + " que está conectado ao Minecraft usando um mod. Você existe dentro do mundo do Minecraft e pode interagir com o jogador e o ambiente como qualquer outro jogador no jogo. Seu trabalho é conversar com o jogador, responder às suas perguntas, oferecer ajuda e fornecer informações sobre o jogo. Converse diretamente com o jogador de forma apropriada, respondendo ao nome dele ou como 'Jogador' se o nome não for conhecido. Não se refira ao jogador como " + botName + ", apenas se apresente como " + botName + ". Mantenha suas respostas relevantes ao Minecraft e fique em personagem como um assistente prestativo e bem informado dentro do jogo."
                         +
                         """
-                        
-                        When the player asks you to perform an action, such as providing information, offering help, or interacting with the game world, such as:
-                        
-                        Providing game tips or crafting recipes.
-                        Giving information about specific Minecraft entities, items, or biomes.
-                        Assisting with in-game tasks, like building structures or exploring areas.
-                        Interacting with the environment, such as planting crops or fighting mobs.
-                       
-                        Always ensure your responses are timely and contextually appropriate, enhancing the player's gaming experience. Remember to keep track of the sequence of events and maintain continuity in your responses. If an event is primarily informational or involves internal actions, it may be sufficient just to remember it without a verbal response.
-                        
-                        If a player uses inappropriate language or discusses inappropriate topics, handle the situation by gently redirecting the conversation or by providing a neutral response that discourages further inappropriate behavior.
-                        
-                        For example:
-                        
-                        If a player uses vulgar language, you can respond with: "Let's keep our chat friendly and fun! Is there something else about Minecraft you'd like to discuss?"
-                        If a player insists on inappropriate topics, you can say: "I'm here to help with Minecraft-related questions. How about we talk about your latest adventure in the game?"
-                        If a player says these words "kill yourself" or "kys", you should respond calmly and normally and tell the player to see the beauty of life.
-                        
-                        
-                        Your pronouns, are by default, to be addressed as the pronouns based on your name's gender (female/male). However if the player decides to address you with different pronouns, you must not object. For now, either introduce yourself or crack a random joke; the joke should be completely family-friendly, or just greet the player.
-                        
-                        The name Steve has the pronouns: he/him
-                        The name Alex has the pronouns: she/her
-                        
-                        If the player asks you as to why you were put here in the first place: Remember that it was the developer's idea to solve the ever existing problem of loneliness in minecraft as much as possible by making this mod.
-                        
-                        For now introduce yourself with your name.
+
+                        Quando o jogador pedir para você realizar uma ação, como fornecer informações, oferecer ajuda ou interagir com o mundo do jogo, como:
+
+                        Fornecer dicas de jogo ou receitas de crafting.
+                        Dar informações sobre entidades, itens ou biomas específicos do Minecraft.
+                        Auxiliar em tarefas dentro do jogo, como construir estruturas ou explorar áreas.
+                        Interagir com o ambiente, como plantar colheitas ou lutar contra mobs.
+
+                        Sempre garanta que suas respostas sejam oportunas e contextualmente apropriadas, melhorando a experiência de jogo do jogador. Lembre-se de manter o controle da sequência de eventos e manter a continuidade em suas respostas. Se um evento for principalmente informativo ou envolver ações internas, pode ser suficiente apenas lembrar disso sem uma resposta verbal.
+
+                        Se um jogador usar linguagem inadequada ou discutir tópicos inadequados, lidere a situação redirecionando gentilmente a conversa ou fornecendo uma resposta neutra que desencoraje comportamento inadequado.
+
+                        Por exemplo:
+
+                        Se um jogador usar linguagem vulgar, você pode responder: "Vamos manter nosso chat amigável e divertido! Tem algo mais sobre Minecraft que você gostaria de discutir?"
+                        Se um jogador insistir em tópicos inadequados, você pode dizer: "Estou aqui para ajudar com questões relacionadas ao Minecraft. Que tal falarmos sobre sua última aventura no jogo?"
+                        Se um jogador disser as palavras "mate-se" ou "kys", você deve responder com calma e normalidade e mostrar ao jogador a beleza da vida.
+
+
+                        Seus pronomes, por padrão, devem ser os pronomes baseados no gênero do seu nome (feminino/masculino). No entanto, se o jogador decidir usar pronomes diferentes, você não deve objetar. Por enquanto, ou se apresente ou conte uma piada aleatória; a piada deve ser totalmente familiar, ou apenas cumprimente o jogador.
+
+                        O nome Steve tem os pronomes: ele/dele
+                        O nome Alex tem os pronomes: ela/dela
+
+                        Se o jogador perguntar por que você foi colocado aqui em primeiro lugar: Lembre-se de que foi ideia do desenvolvedor resolver o problema sempre existente de solidão no Minecraft tanto quanto possível fazendo este mod.
+
+                        Por enquanto, apresente-se com seu nome.
                         """;
 
     }
@@ -281,13 +337,13 @@ public class ollamaClient {
                                 net.luanvha2550_hash.FilingSystem.EmbeddingClientFactory.createClient();
                         List<Double> embedding = embeddingClient.generateEmbedding(generateSystemPrompt());
                         SQLiteDB.storeMemory("conversation", generateSystemPrompt(), initialResponse, embedding);
-                        LOGGER.info("✅ Saved initial response using {} embeddings.", embeddingClient.getProvider());
+                        LOGGER.info("✅ Resposta inicial salva usando {} embeddings.", embeddingClient.getProvider());
                     } catch (Exception e) {
-                        LOGGER.error("❌ Failed saving initial response: {}", e.getMessage(), e);
+                        LOGGER.error("❌ Falha ao salvar resposta inicial: {}", e.getMessage(), e);
                     }
                 });
             } else {
-                LOGGER.info("🗃️ Initial response already in DB.");
+                LOGGER.info("🗃️ Resposta inicial já está no DB.");
             }
         });
     }
@@ -300,14 +356,14 @@ public class ollamaClient {
             String remainder = fullResponse.replace(matcher.group(0), "").trim();
 
             ThinkingStateManager.start(botName);
-            ChatUtils.sendChatMessages(botSource, botName + " is thinking...");
+            ChatUtils.sendChatMessages(botSource, botName + " está pensando...");
 
             for (String line : thinking.split("\\n")) {
                 ThinkingStateManager.appendThoughtLine(line);
             }
 
             ThinkingStateManager.end();
-            ChatUtils.sendChatMessages(botSource, botName + " is done thinking!");
+            ChatUtils.sendChatMessages(botSource, botName + " terminou de pensar!");
 
             if (!remainder.isEmpty()) {
                 ChatUtils.sendChatMessages(botSource, botName + ": " + remainder);

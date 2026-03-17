@@ -33,6 +33,7 @@ public class modCommandRegistry {
 
     public static final Logger LOGGER = LoggerFactory.getLogger("mod-command-registry");
     public static String botName = "";
+    public static boolean isTrainingMode = false;
 
     public static void register() {
         // Registrar comando de debug de ameaças
@@ -106,5 +107,19 @@ public class modCommandRegistry {
         BotEventHandler.bot = null;
 
         source.sendMessage(Text.of("§9[Clawbot] §7Bot §f" + removedBotName + " §7removido com sucesso!"));
+    }
+
+    /**
+     * Move o bot para frente.
+     */
+    public static void moveForward(MinecraftServer server, ServerCommandSource source, String botName) {
+        server.getCommandManager().executeWithPrefix(source, "/player " + botName + " move forward");
+    }
+
+    /**
+     * Para o movimento do bot.
+     */
+    public static void stopMoving(MinecraftServer server, ServerCommandSource source, String botName) {
+        server.getCommandManager().executeWithPrefix(source, "/player " + botName + " stop");
     }
 }

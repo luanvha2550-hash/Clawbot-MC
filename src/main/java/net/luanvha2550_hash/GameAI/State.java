@@ -188,6 +188,44 @@ public class State implements Serializable {
                 '}';
     }
 
+    /**
+     * Calculate similarity between two states (0.0 to 1.0).
+     * Used for experience comparison in RLAgent v2.
+     */
+    public double calculateSimilarity(State other) {
+        if (other == null) return 0.0;
+
+        double similarity = 0.0;
+        int factors = 0;
+
+        // Position similarity (normalized distance)
+        double posDistance = Math.sqrt(
+            Math.pow(this.botX - other.botX, 2) +
+            Math.pow(this.botY - other.botY, 2) +
+            Math.pow(this.botZ - other.botZ, 2)
+        );
+        similarity += Math.max(0, 1.0 - posDistance / DISTANCE_TOLERANCE);
+        factors++;
+
+        // Health similarity
+        similarity += 1.0 - Math.abs(this.botHealth - other.botHealth) / 20.0;
+        factors++;
+
+        // Distance to hostile entity similarity
+        similarity += 1.0 - Math.min(1.0, Math.abs(this.distanceToHostileEntity - other.distanceToHostileEntity) / DISTANCE_TOLERANCE);
+        factors++;
+
+        // Entity overlap
+        similarity += calculateEntityOverlap(this.nearbyEntities, other.nearbyEntities);
+        factors++;
+
+        // Block overlap
+        similarity += calculateBlockOverlap(this.nearbyBlocks, other.nearbyBlocks);
+        factors++;
+
+        return similarity / factors;
+    }
+
     public static boolean isStateConsistent(State lastState, State currentState) {
         if (lastState == null) return false;
 

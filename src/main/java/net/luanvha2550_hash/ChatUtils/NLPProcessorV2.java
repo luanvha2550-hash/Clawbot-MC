@@ -246,7 +246,7 @@ public class NLPProcessorV2 {
      */
     public static boolean shouldUseLLM(ClassificationResult result) {
         // Sempre usar LLM para ações complexas com confiança média
-        if (result.intent == Intent.COMPLEX_ACTION && result.confidence < HIGH_CONFIDANCE) {
+        if (result.intent == Intent.COMPLEX_ACTION && result.confidence < HIGH_CONFIDENCE) {
             return true;
         }
 

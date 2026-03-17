@@ -1,6 +1,5 @@
 package net.luanvha2550_hash;
 
-import ai.djl.ModelException;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
 import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
@@ -9,8 +8,9 @@ import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
-import net.luanvha2550_hash.ChatUtils.BERTModel.BertModelManager;
+import net.luanvha2550_hash.AIProviders.LLMDecisionEngine;
 import net.luanvha2550_hash.ChatUtils.NLPProcessor;
+import net.luanvha2550_hash.ChatUtils.NLPProcessorV2;
 import net.luanvha2550_hash.Commands.configCommand;
 import net.luanvha2550_hash.Commands.modCommandRegistry;
 import net.luanvha2550_hash.Database.QTable;
@@ -39,8 +39,8 @@ public class AIPlayer implements ModInitializer {
     public static final Logger LOGGER = LoggerFactory.getLogger("ai-player");
 	public static final ManualConfig CONFIG = ManualConfig.load();
 	public static MinecraftServer serverInstance = null; // default for now
-	public static BertModelManager modelManager;
-	public static boolean loadedBERTModelIntoMemory = false;
+	// NLPProcessorV2 é o sistema principal - BERT é legado
+	public static boolean isNLPV2Initialized = false;
 
 
 	@Override
@@ -92,6 +92,16 @@ public class AIPlayer implements ModInitializer {
 
 			AISearchConfig.setupIfMissing();
 			NLPProcessor.ensureLocalNLPModel();
+
+			// Inicializar NLPProcessorV2 (novo sistema de embeddings)
+			try {
+				NLPProcessorV2.initialize();
+				LOGGER.info("✅ NLPProcessorV2 inicializado com sucesso!");
+			} catch (Exception e) {
+				LOGGER.error("❌ Falha ao inicializar NLPProcessorV2: {}", e.getMessage());
+				// Fallback para NLP antigo já está inicializado
+			}
+
 			try {
 				Thread.sleep(2000);
 				System.out.println("NLP model deployment task complete");
@@ -102,9 +112,7 @@ public class AIPlayer implements ModInitializer {
 		});
 
 
-		modelManager = BertModelManager.getInstance();
-
-		// Inside AIPlayer.onInitialize()
+		// Usar NLPProcessorV2 como sistema principal (mais estável e em português)
 		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
 			configNetworkManager.registerServerModelNameSaveReceiver(server);
 			configNetworkManager.registerServerAPIKeySaveReceiver(server);
@@ -114,35 +122,21 @@ public class AIPlayer implements ModInitializer {
 
 			System.out.println("Server instance is " + serverInstance);
 
-			LOGGER.info("Proceeding to load BERT model into memory");
-
-			try {
-				modelManager.loadModel();
-				loadedBERTModelIntoMemory = true;
-				LOGGER.info("BERT model loaded into memory. It will stay in memory as long as any bot stays active in game.");
-			} catch (IOException | ModelException e) {
-				LOGGER.error("BERT Model loading failed! {}", e.getMessage());
-			}
-
-
+			// NLPProcessorV2 já foi inicializado no async task acima
+			// BERT model é legado e não será mais carregado para evitar crashes
+			LOGGER.info("NLP Processor V2 está ativo. BERT model legado desativado.");
 		});
 
 		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
 
 			AutoFaceEntity.onServerStopped(server);
 
-
+			// Cleanup NLPProcessorV2 resources
 			try {
-				if (modelManager.isModelLoaded() || loadedBERTModelIntoMemory) {
-					modelManager.unloadModel();
-					System.out.println("Unloaded BERT Model from memory");
-				}
-				else {
-					System.out.println("BERT Model was not loaded, skipping unloading...");
-				}
-
-			} catch (IOException e) {
-				LOGGER.error("BERT Model unloading failed!", e);
+				NLPProcessorV2.shutdown();
+				LOGGER.info("NLPProcessorV2 desligado com sucesso");
+			} catch (Exception e) {
+				LOGGER.error("Erro ao desligar NLPProcessorV2: {}", e.getMessage());
 			}
 
 		});

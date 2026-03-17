@@ -2066,6 +2066,19 @@ public class RLAgent {
         }
     }
 
+    /**
+     * Get max Q-value for a given state across all actions.
+     */
+    private double getMaxQValue(State state) {
+        double maxQ = Double.NEGATIVE_INFINITY;
+        for (Map.Entry<StateActionPair, QEntry> entry : qTable.getTable().entrySet()) {
+            if (State.isStateConsistent(entry.getKey().getState(), state)) {
+                maxQ = Math.max(maxQ, entry.getValue().getQValue());
+            }
+        }
+        return maxQ == Double.NEGATIVE_INFINITY ? 0.0 : maxQ;
+    }
+
     // ========== RLAgent v2: Métodos de Memória de Experiências ==========
 
     public void addExperience(Experience experience) {
@@ -2114,10 +2127,11 @@ public class RLAgent {
 
     public void learnFromExperience(Experience exp) {
         StateActionPair sap = new StateActionPair(exp.state, exp.action);
-        double currentQ = qTable.getQValue(sap);
+        QEntry entry = qTable.getEntry(sap);
+        double currentQ = (entry != null) ? entry.getQValue() : 0.0;
         double maxNextQ = getMaxQValue(exp.nextState);
         double newQ = currentQ + ALPHA * (exp.reward + GAMMA * maxNextQ - currentQ);
-        qTable.update(sap, newQ);
+        qTable.addEntry(exp.state, exp.action, newQ, exp.nextState);
         double tdError = Math.abs(exp.reward + GAMMA * maxNextQ - currentQ);
         exp.updatePriority(tdError);
     }

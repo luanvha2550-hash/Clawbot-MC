@@ -468,16 +468,16 @@ public class NLPProcessor {
         String LIDSNetLabel = null;
         String decision = null;
 
+        // Usar NLPProcessorV2 como sistema principal (BERT é legado)
         try {
-            Classifications intent = AIPlayer.modelManager.predict(userPrompt);
-            if (intent != null) {
-                bertLabel = intent.best().getClassName();
-                bertClassificationConfidence = intent.best().getProbability();
-
-                LOGGER.info("BERT predicted: {} with confidence: {}", bertLabel, bertClassificationConfidence);
-            }
+            NLPProcessorV2.ClassificationResult result = NLPProcessorV2.classifyIntent(userPrompt);
+            bertLabel = result.intent.toString();
+            bertClassificationConfidence = result.confidence;
+            LOGGER.info("NLPProcessorV2 predicted: {} with confidence: {}", bertLabel, bertClassificationConfidence);
         } catch (Exception e) {
-            LOGGER.error("Error predicting intent using BERT: {}", e.getMessage());
+            LOGGER.error("Error predicting intent using NLPProcessorV2: {}", e.getMessage());
+            // Fallback: usar método antigo com LLM
+            return getIntentionFromLLM(userPrompt);
         }
 
         try {

@@ -203,6 +203,17 @@ public class LLMDecisionEngine {
     }
 
     /**
+     * Retorna as últimas N mensagens do histórico.
+     */
+    private static List<ConversationTurn> getRecentHistory(int n) {
+        if (conversationHistory.isEmpty()) {
+            return new ArrayList<>();
+        }
+        int start = Math.max(0, conversationHistory.size() - n);
+        return new ArrayList<>(conversationHistory.subList(start, conversationHistory.size()));
+    }
+
+    /**
      * Gera chave de cache para uma mensagem.
      */
     private static String generateCacheKey(String message) {
