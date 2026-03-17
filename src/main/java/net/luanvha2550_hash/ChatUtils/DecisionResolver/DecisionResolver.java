@@ -41,16 +41,16 @@ public class DecisionResolver {
             String cartMainPred, double cartMainConf,
             String lidsNetPred, double lidsNetConf
     ) {
-        return "You are a final Intent Decision Resolver for a Minecraft AI mod. " +
-                "Your task is to read below the outputs and confidences from six intent classifiers and fairly deduce the player's intent out of the three intents: GENERAL_CONVERSATION: Just chatting, ASK_INFORMATION: Requesting information regarding something, REQUEST_ACTION: Requesting an action to be executed." +
-                "Decide between: REQUEST_ACTION, ASK_INFORMATION, GENERAL_CONVERSATION. You should output only either the three of these based on your reasoning and the output should be the exact same as the labels, otherwise the output resolver will fail.\n" +
-                "- Player message: \"" + playerMessage + "\"\n" +
+        return "Você é um resolvedor final de intenções para um mod de IA do Minecraft. " +
+                "Sua tarefa é ler as saídas e confianças abaixo de seis classificadores de intenções e deduzir corretamente a intenção do jogador entre as três intenções: GENERAL_CONVERSATION: Apenas conversando, ASK_INFORMATION: Solicitando informações sobre algo, REQUEST_ACTION: Solicitando a execução de uma ação." +
+                "Decida entre: REQUEST_ACTION, ASK_INFORMATION, GENERAL_CONVERSATION. Você deve retornar apenas uma das três baseado em seu raciocínio e a saída deve ser exatamente igual aos rótulos, caso contrário o resolvedor falhará.\n" +
+                "- Mensagem do jogador: \"" + playerMessage + "\"\n" +
                 "- BERT: " + bertPred + " (" + String.format("%.2f", bertConf) + ")\n" +
                 "- Main CART: " + cartMainPred + " (" + String.format("%.2f", cartMainConf) + ")\n" +
                 "- LIDSNet: " + lidsNetPred + " (" + String.format("%.2f", lidsNetConf) + ")\n" +
-                "\nYour decision: Reply ONLY with one of REQUEST_ACTION, ASK_INFORMATION, GENERAL_CONVERSATION. " +
-                "If truly ambiguous, return UNSPECIFIED. No further explanation."+
-                "Also, do keep in mind that these classifiers are very experimental, so often they might return outputs which totally goes against your intuition, such as misclassifying a GENERAL_ACTION as REQUEST_ACTION or ASK_INFORMATION, or vice versa. In such instances, DO NOT OVERTHINK, DO NOT TRUST THE CLASSIFIERS and just go with what intent the input best fits according to you and return only the intent, not anything else";
+                "\nSua decisão: Responda APENAS com uma das opções REQUEST_ACTION, ASK_INFORMATION, GENERAL_CONVERSATION. " +
+                "Se for realmente ambíguo, retorne UNSPECIFIED. Sem explicação adicional."+
+                "Também, tenha em mente que estes classificadores são muito experimentais, então frequentemente podem retornar saídas que vão totalmente contra sua intuição, como classificar incorretamente uma GENERAL_CONVERSATION como REQUEST_ACTION ou ASK_INFORMATION, ou vice-versa. Em tais instâncias, NÃO PENSE DEMAIS, NÃO CONFIE NOS CLASSIFICADORES e apenas vá com a intenção que o input melhor se encaixa de acordo com você e retorne apenas a intenção, nada mais";
     }
 
     /**

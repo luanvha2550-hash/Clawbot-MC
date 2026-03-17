@@ -55,6 +55,7 @@ public class NLPProcessorV2 {
     // Modelo e predictor
     private static ZooModel<String, float[]> embeddingModel;
     private static Predictor<String, float[]> embeddingPredictor;
+    private static boolean initialized = false;
 
     // Cache de embeddings para intents conhecidas
     private static final Map<Intent, List<float[]>> intentEmbeddings = new HashMap<>();
@@ -145,11 +146,20 @@ public class NLPProcessorV2 {
             LOGGER.info("✅ NLPProcessorV2 inicializado com sucesso!");
             LOGGER.info("   Modelo: all-MiniLM-L6-v2 ({} dimensões)", EMBEDDING_DIMENSION);
             LOGGER.info("   Intents treinadas: {}", trainingExamples.size());
+            initialized = true;
 
         } catch (Exception e) {
             LOGGER.error("❌ Falha ao inicializar NLPProcessorV2: {}", e.getMessage(), e);
             throw new RuntimeException("NLP initialization failed", e);
         }
+    }
+
+    /**
+     * Verifica se o NLPProcessorV2 está inicializado.
+     * @return true se inicializado com sucesso
+     */
+    public static boolean isInitialized() {
+        return initialized;
     }
 
     /**

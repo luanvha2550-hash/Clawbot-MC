@@ -41,6 +41,11 @@ public class modCommandRegistry {
             ThreatDebugCommand.register(dispatcher);
         });
 
+        // Registrar comando de debug /clawdev
+        CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+            ClawdevCommand.register(dispatcher);
+        });
+
         // Comando principal simplificado: /aiplayer
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> dispatcher.register(
             literal("aiplayer")

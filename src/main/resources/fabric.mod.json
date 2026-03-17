@@ -16,13 +16,13 @@
 	"environment": "*",
 	"entrypoints": {
 		"main": [
-			"net.shasankp000.AIPlayer"
+			"net.luanvha2550_hash.AIPlayer"
 		],
 		"client": [
-			"net.shasankp000.AIPlayerClient"
+			"net.luanvha2550_hash.AIPlayerClient"
 		],
 		"fabric-datagen": [
-			"net.shasankp000.AIPlayerDataGenerator"
+			"net.luanvha2550_hash.AIPlayerDataGenerator"
 		]
 	},
 	"mixins": [

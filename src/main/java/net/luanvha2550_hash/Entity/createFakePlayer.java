@@ -130,7 +130,10 @@ public class createFakePlayer extends ServerPlayerEntity {
     private static void spawnFake(MinecraftServer server, ServerWorld worldIn, GameProfile gameprofile, Vec3d pos, double yaw, double pitch, GameMode gamemode, boolean flying, RegistryKey<World> dimensionId) {
         createFakePlayer instance = new createFakePlayer(server, worldIn, gameprofile, SyncedClientOptions.createDefault(), false);
         server.getPlayerManager().onPlayerConnect(new FakeClientConnection(NetworkSide.SERVERBOUND), instance, new ConnectedClientData(gameprofile, 0, instance.getClientOptions(), false));
-        instance.teleport(worldIn, pos.x, pos.y, pos.z, (float) yaw, (float) pitch);
+
+        // Encontrar posição segura para spawn
+        Vec3d safePos = findSafeSpawnPosition(worldIn, pos);
+        instance.teleport(worldIn, safePos.x, safePos.y, safePos.z, (float) yaw, (float) pitch);
         instance.setHealth(20.0F);
         instance.unsetRemoved();
         instance.interactionManager.changeGameMode(gamemode);
@@ -141,6 +144,43 @@ public class createFakePlayer extends ServerPlayerEntity {
 
         // Initialize autonomy engine for autonomous behavior
         BotEventHandler.initializeAutonomy(instance);
+    }
+
+    /**
+     * Encontra uma posição segura para spawn, evitando blocos sólidos.
+     * Faz raycast para baixo e verifica colisão.
+     */
+    private static Vec3d findSafeSpawnPosition(ServerWorld world, Vec3d originalPos) {
+        // Verificar se a posição original está dentro de bloco sólido
+        BlockPos originalBlock = new BlockPos((int) originalPos.x, (int) originalPos.y, (int) originalPos.z);
+        BlockState state = world.getBlockState(originalBlock);
+
+        // Se está dentro de bloco sólido, procurar bloco de ar acima
+        if (!state.isAir() && state.isOpaque()) {
+            for (int y = originalBlock.getY() + 1; y < originalBlock.getY() + 6; y++) {
+                BlockPos checkPos = new BlockPos(originalBlock.getX(), y, originalBlock.getZ());
+                BlockState checkState = world.getBlockState(checkPos);
+                if (checkState.isAir() || !checkState.isOpaque()) {
+                    return new Vec3d(originalPos.x, y + 0.5, originalPos.z);
+                }
+            }
+        }
+
+        // Raycast para baixo para encontrar chão
+        Vec3d start = new Vec3d(originalPos.x, originalPos.y + 2, originalPos.z);
+        Vec3d end = new Vec3d(originalPos.x, originalPos.y - 10, originalPos.z);
+
+        // Verificar blocos abaixo
+        for (int y = (int) originalPos.y - 1; y >= (int) originalPos.y - 10; y--) {
+            BlockPos checkPos = new BlockPos((int) originalPos.x, y, (int) originalPos.z);
+            BlockState checkState = world.getBlockState(checkPos);
+            if (!checkState.isAir() && checkState.isOpaque()) {
+                // Retornar posição acima do bloco sólido
+                return new Vec3d(originalPos.x, y + 1.5, originalPos.z);
+            }
+        }
+
+        return originalPos; // Fallback
     }
 
 

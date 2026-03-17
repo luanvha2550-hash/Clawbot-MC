@@ -1,7 +1,7 @@
 {
 	"required": false,
-	"package": "net.shasankp000.mixin",
-	"compatibilityLevel": "JAVA_17",
+	"package": "net.luanvha2550_hash.mixin",
+	"compatibilityLevel": "JAVA_21",
 	"mixins": [
 		"ExampleMixin",
 		"PlayerDamageMixin"

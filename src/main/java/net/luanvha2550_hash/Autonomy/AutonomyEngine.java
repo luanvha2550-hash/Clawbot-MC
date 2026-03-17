@@ -2,7 +2,9 @@ package net.luanvha2550_hash.Autonomy;
 
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.mob.HostileEntity;
+import net.minecraft.item.ItemStack;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
@@ -22,7 +24,9 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -393,9 +397,31 @@ public class AutonomyEngine {
      * @return InventorySnapshot of current inventory state
      */
     private InventorySnapshot buildInventorySnapshot() {
-        // Placeholder - would integrate with actual inventory system
-        // For now, return empty inventory
-        return new InventorySnapshot();
+        Map<String, Integer> items = new HashMap<>();
+        int woodCount = 0, stoneCount = 0, ironCount = 0, diamondCount = 0;
+        int foodCount = 0, toolCount = 0, weaponCount = 0, armorCount = 0;
+
+        // Escanear inventário do bot
+        for (int i = 0; i < bot.getInventory().size(); i++) {
+            ItemStack stack = bot.getInventory().getStack(i);
+            if (!stack.isEmpty()) {
+                String itemKey = stack.getItem().getTranslationKey();
+                items.put(itemKey, stack.getCount());
+
+                // Contar recursos específicos
+                String itemName = itemKey.toLowerCase();
+                if (itemName.contains("log") || itemName.contains("wood") || itemName.contains("plank")) woodCount++;
+                if (itemName.contains("cobblestone") || itemName.contains("stone") || itemName.contains("andesite") || itemName.contains("diorite") || itemName.contains("granite")) stoneCount++;
+                if (itemName.contains("iron")) ironCount++;
+                if (itemName.contains("diamond")) diamondCount++;
+                if (stack.getComponents().get(net.minecraft.component.DataComponentTypes.FOOD) != null) foodCount++;
+                if (stack.getItem() instanceof net.minecraft.item.ToolItem) toolCount++;
+                if (stack.getItem() instanceof net.minecraft.item.SwordItem || stack.getItem() instanceof net.minecraft.item.AxeItem) weaponCount++;
+                if (stack.getItem() instanceof net.minecraft.item.ArmorItem) armorCount++;
+            }
+        }
+
+        return new InventorySnapshot(items, woodCount, stoneCount, ironCount, diamondCount, foodCount, toolCount, weaponCount, armorCount, 0, 0, false);
     }
 
     /**
@@ -611,9 +637,11 @@ public class AutonomyEngine {
      * Handle actions by their ID when no executor is provided.
      */
     private void handleActionById(String actionId, AutonomyContext context) {
+        ServerCommandSource botSource = bot.getCommandSource().withSilent().withMaxLevel(4);
+        MinecraftServer server = bot.getServer();
+
         switch (actionId) {
             case "OBSERVE_PLAYER":
-                // Observation is passive - just log it
                 LOGGER.debug("[AutonomyEngine] Observing player behavior");
                 break;
 
@@ -622,12 +650,72 @@ public class AutonomyEngine {
                 break;
 
             case "FOLLOW_OWNER":
-                // Follow owner - execute movement to owner position
                 Vec3d ownerPos = context.getOwnerPosition();
                 if (ownerPos != null) {
                     LOGGER.info("[AutonomyEngine] Following owner to position: {}", ownerPos);
                     moveDirectlyTo(ownerPos);
                 }
+                break;
+
+            case "PATROL_AREA":
+                // Patrulhar área aleatória próxima
+                Vec3d patrolPos = new Vec3d(
+                    bot.getX() + (bot.getRandom().nextBetween(-16, 16)),
+                    bot.getY(),
+                    bot.getZ() + (bot.getRandom().nextBetween(-16, 16))
+                );
+                LOGGER.info("[AutonomyEngine] Patrolling to: {}", patrolPos);
+                moveDirectlyTo(patrolPos);
+                break;
+
+            case "MELEE_ATTACK":
+                if (!context.getHostileEntities().isEmpty()) {
+                    Entity target = context.getHostileEntities().get(0);
+                    LOGGER.info("[AutonomyEngine] Attacking: {}", target.getName().getString());
+                    server.getCommandManager().executeWithPrefix(botSource, "/player " + bot.getName().getString() + " attack " + target.getName().getString());
+                }
+                break;
+
+            case "RETREAT":
+                // Recuar na direção oposta
+                Vec3d currentPos = bot.getPos();
+                if (!context.getHostileEntities().isEmpty()) {
+                    Entity hostile = context.getHostileEntities().get(0);
+                    Vec3d retreatPos = new Vec3d(currentPos.x * 2 - hostile.getX(), currentPos.y, currentPos.z * 2 - hostile.getZ());
+                    LOGGER.info("[AutonomyEngine] Retreating to: {}", retreatPos);
+                    moveDirectlyTo(retreatPos);
+                }
+                break;
+
+            case "EAT_FOOD":
+                // Comer comida do inventário
+                for (int i = 0; i < bot.getInventory().size(); i++) {
+                    ItemStack stack = bot.getInventory().getStack(i);
+                    if (stack.getComponents().get(net.minecraft.component.DataComponentTypes.FOOD) != null) {
+                        LOGGER.info("[AutonomyEngine] Eating: {}", stack.getItem().getName());
+                        server.getCommandManager().executeWithPrefix(botSource, "/player " + bot.getName().getString() + " hotbar " + (i + 1));
+                        server.getCommandManager().executeWithPrefix(botSource, "/player " + bot.getName().getString() + " use");
+                        break;
+                    }
+                }
+                break;
+
+            case "GATHER_WOOD":
+            case "GATHER_STONE":
+            case "GATHER_ORE":
+                String resource = actionId.replace("GATHER_", "").toLowerCase();
+                LOGGER.info("[AutonomyEngine] Gathering: {}", resource);
+                // Usar pathfinding para encontrar recurso
+                break;
+
+            case "CRAFT_ITEM":
+                LOGGER.info("[AutonomyEngine] Crafting item");
+                // Implementar craft quando pathfinding estiver disponível
+                break;
+
+            case "BUILD_STRUCTURE":
+                LOGGER.info("[AutonomyEngine] Building structure");
+                // Implementar construção quando pathfinding estiver disponível
                 break;
 
             default:
