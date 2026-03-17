@@ -63,6 +63,9 @@ dependencies {
 	// OpenNLP ONLY - No Stanford CoreNLP!
 	implementation 'org.apache.opennlp:opennlp-tools:2.5.5'
 
+	// Sentence Embeddings (sentence-transformers equivalent for Java)
+	implementation 'ai.djl.pytorch:pytorch-engine:0.33.0'
+	implementation 'ai.djl:api:0.33.0'
 
 	// Include statements for runtime
 	include "com.github.amithkoujalgi:ollama4j:1.0.77"
