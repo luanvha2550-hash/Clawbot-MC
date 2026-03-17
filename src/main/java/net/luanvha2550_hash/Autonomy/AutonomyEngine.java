@@ -116,7 +116,9 @@ public class AutonomyEngine {
         this.alertSystem = alertSystem;
 
         this.layers = new ArrayList<>();
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+        // Thread pool com limite fixo para prevenir memory leak
+        // 4 threads são suficientes para o tick loop e tarefas auxiliares
+        this.scheduler = Executors.newScheduledThreadPool(4, r -> {
             Thread t = new Thread(r, "AutonomyEngine-Tick");
             t.setDaemon(true);
             return t;

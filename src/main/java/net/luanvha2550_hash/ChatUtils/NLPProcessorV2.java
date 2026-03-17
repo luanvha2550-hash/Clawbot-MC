@@ -26,6 +26,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * NLP Processor v2 - Sistema de processamento de linguagem natural otimizado.
@@ -62,6 +63,13 @@ public class NLPProcessorV2 {
 
     // Exemplos de treinamento para cada intent (em português)
     private static final Map<Intent, List<String>> trainingExamples = new HashMap<>();
+
+    // Cache de intents por mensagem hash (TTL: 10 minutos)
+    private static final Map<String, CachedIntent> intentCache = new ConcurrentHashMap<>();
+    private static final long CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
+
+    // Cache de embeddings por mensagem (evita recomputar embedding da mesma mensagem)
+    private static final Map<String, float[]> embeddingCache = new ConcurrentHashMap<>();
 
     static {
         initializeTrainingExamples();
@@ -188,11 +196,19 @@ public class NLPProcessorV2 {
             return new ClassificationResult(Intent.UNSPECIFIED, 0.0);
         }
 
+        // Verificar cache de intents primeiro
+        String cacheKey = normalizeCacheKey(message);
+        CachedIntent cached = intentCache.get(cacheKey);
+        if (cached != null && !isExpired(cached)) {
+            LOGGER.debug("Cache hit de intent para: {}", message);
+            return cached.result;
+        }
+
         try {
             long startTime = System.currentTimeMillis();
 
-            // Gerar embedding da mensagem
-            float[] messageEmbedding = embeddingPredictor.predict(message.toLowerCase());
+            // Gerar ou recuperar embedding da mensagem
+            float[] messageEmbedding = getEmbeddingFromCache(message);
 
             // Calcular similaridade com cada intent
             Map<Intent, Double> similarities = new HashMap<>();
@@ -216,15 +232,82 @@ public class NLPProcessorV2 {
             }
 
             long duration = System.currentTimeMillis() - startTime;
+            ClassificationResult result = new ClassificationResult(bestIntent, bestSimilarity);
+
+            // Armazenar no cache
+            intentCache.put(cacheKey, new CachedIntent(result, System.currentTimeMillis()));
+
+            // Limpar cache expirado periodicamente
+            if (intentCache.size() > 500) {
+                cleanupExpiredCache();
+            }
+
             LOGGER.debug("Intent classificada: {} (confiança: {:.2f}, tempo: {}ms)",
                 bestIntent, bestSimilarity, duration);
 
-            return new ClassificationResult(bestIntent, bestSimilarity);
+            return result;
 
         } catch (TranslateException e) {
             LOGGER.error("Erro ao classificar intent: {}", e.getMessage());
             return new ClassificationResult(Intent.UNSPECIFIED, 0.0);
         }
+    }
+
+    /**
+     * Obtém embedding do cache ou computa e armazena.
+     */
+    private static float[] getEmbeddingFromCache(String message) throws TranslateException {
+        String key = normalizeCacheKey(message);
+        float[] cached = embeddingCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+
+        float[] embedding = embeddingPredictor.predict(message.toLowerCase());
+        embeddingCache.put(key, embedding);
+        return embedding;
+    }
+
+    /**
+     * Normaliza mensagem para chave de cache.
+     */
+    private static String normalizeCacheKey(String message) {
+        return message.toLowerCase().trim();
+    }
+
+    /**
+     * Verifica se cache entry está expirado.
+     */
+    private static boolean isExpired(CachedIntent entry) {
+        return System.currentTimeMillis() - entry.timestamp > CACHE_TTL_MS;
+    }
+
+    /**
+     * Limpa entradas expiradas do cache.
+     */
+    private static void cleanupExpiredCache() {
+        long now = System.currentTimeMillis();
+        intentCache.entrySet().removeIf(entry ->
+            now - entry.getValue().timestamp > CACHE_TTL_MS);
+        embeddingCache.entrySet().removeIf(entry -> {
+            // Embeddings não expiram, mas removemos se intent correspondente expirou
+            return !intentCache.containsKey(entry.getKey());
+        });
+    }
+
+    /**
+     * Libera recursos ao desligar.
+     */
+    public static void shutdown() {
+        if (embeddingPredictor != null) {
+            embeddingPredictor.close();
+        }
+        if (embeddingModel != null) {
+            embeddingModel.close();
+        }
+        intentCache.clear();
+        embeddingCache.clear();
+        LOGGER.info("NLPProcessorV2 desligado.");
     }
 
     /**
@@ -274,19 +357,6 @@ public class NLPProcessorV2 {
     }
 
     /**
-     * Libera recursos ao desligar.
-     */
-    public static void shutdown() {
-        if (embeddingPredictor != null) {
-            embeddingPredictor.close();
-        }
-        if (embeddingModel != null) {
-            embeddingModel.close();
-        }
-        LOGGER.info("NLPProcessorV2 desligado.");
-    }
-
-    /**
      * Resultado da classificação de intent.
      */
     public static class ClassificationResult {
@@ -304,6 +374,19 @@ public class NLPProcessorV2 {
 
         public boolean isMediumConfidence() {
             return confidence >= MEDIUM_CONFIDENCE;
+        }
+    }
+
+    /**
+     * Cache entry para intents com timestamp.
+     */
+    private static class CachedIntent {
+        final ClassificationResult result;
+        final long timestamp;
+
+        CachedIntent(ClassificationResult result, long timestamp) {
+            this.result = result;
+            this.timestamp = timestamp;
         }
     }
 

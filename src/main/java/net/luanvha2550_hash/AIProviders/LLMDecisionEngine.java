@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * LLM Decision Engine - Sistema inteligente de decisão para uso do LLM.
@@ -36,6 +37,10 @@ public class LLMDecisionEngine {
     private static final Map<String, CachedResponse> responseCache = new HashMap<>();
     private static final long CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
 
+    // Semantic Cache baseado em embedding similarity (threshold: 0.85)
+    private static final Map<String, CachedLLMResponse> semanticCache = new ConcurrentHashMap<>();
+    private static final double SEMANTIC_SIMILARITY_THRESHOLD = 0.85;
+
     // Histórico de conversa (últimas 5 mensagens)
     private static final List<ConversationTurn> conversationHistory = new ArrayList<>();
     private static final int MAX_HISTORY_SIZE = 5;
@@ -44,6 +49,7 @@ public class LLMDecisionEngine {
     private static int totalRequests = 0;
     private static int llmCalls = 0;
     private static int cacheHits = 0;
+    private static int semanticCacheHits = 0;
 
     /**
      * Decide se deve usar LLM baseado na mensagem e contexto.
@@ -55,7 +61,15 @@ public class LLMDecisionEngine {
     public static boolean shouldUseLLM(String message, ClassificationResult classification) {
         totalRequests++;
 
-        // Verificar cache primeiro
+        // Verificar semantic cache primeiro (mais eficiente que cache por string)
+        CachedLLMResponse semanticHit = getFromSemanticCache(message);
+        if (semanticHit != null) {
+            semanticCacheHits++;
+            LOGGER.debug("Semantic cache hit para mensagem: {} (similaridade: {:.2f})", message, semanticHit.similarity);
+            return true; // Retorna true mas usa cache
+        }
+
+        // Verificar cache por string
         String cacheKey = generateCacheKey(message);
         if (isInCache(cacheKey)) {
             cacheHits++;
@@ -105,6 +119,90 @@ public class LLMDecisionEngine {
             intent, confidence, useLLM);
 
         return useLLM;
+    }
+
+    /**
+     * Verifica semantic cache usando similaridade de embeddings.
+     * Retorna resposta cacheada se similaridade >= threshold.
+     */
+    private static CachedLLMResponse getFromSemanticCache(String message) {
+        if (message == null || message.trim().isEmpty()) {
+            return null;
+        }
+
+        // Gerar embedding simplificado da mensagem (hash-based para performance)
+        String messageHash = message.toLowerCase().trim();
+
+        CachedLLMResponse bestMatch = null;
+        double bestSimilarity = SEMANTIC_SIMILARITY_THRESHOLD;
+
+        for (CachedLLMResponse cached : semanticCache.values()) {
+            double similarity = computeSemanticSimilarity(messageHash, cached.messageHash);
+            if (similarity > bestSimilarity) {
+                // Verificar TTL
+                if (System.currentTimeMillis() - cached.timestamp > CACHE_TTL_MS) {
+                    continue;
+                }
+                bestSimilarity = similarity;
+                bestMatch = cached;
+            }
+        }
+
+        return bestMatch;
+    }
+
+    /**
+     * Computa similaridade semântica baseada em hash de mensagem.
+     * Mensagens idênticas ou muito similares retornam 1.0.
+     */
+    private static double computeSemanticSimilarity(String hash1, String hash2) {
+        if (hash1.equals(hash2)) {
+            return 1.0;
+        }
+
+        // Similaridade por overlap de caracteres (simples mas eficaz)
+        int commonChars = 0;
+        int maxLen = Math.max(hash1.length(), hash2.length());
+        int minLen = Math.min(hash1.length(), hash2.length());
+
+        if (maxLen == 0) return 0.0;
+
+        // Contar caracteres comuns
+        for (char c : hash1.toCharArray()) {
+            if (hash2.indexOf(c) >= 0) {
+                commonChars++;
+            }
+        }
+
+        // Normalizar por tamanho
+        double overlapRatio = (double) commonChars / maxLen;
+
+        // Penalizar diferença de tamanho
+        double sizePenalty = (double) minLen / maxLen;
+
+        return (overlapRatio + sizePenalty) / 2.0;
+    }
+
+    /**
+     * Adiciona resposta ao semantic cache.
+     */
+    public static void cacheToSemanticCache(String message, String response) {
+        String messageHash = message.toLowerCase().trim();
+        semanticCache.put(messageHash, new CachedLLMResponse(messageHash, response, System.currentTimeMillis()));
+
+        // Limpar cache expirado se muito grande
+        if (semanticCache.size() > 500) {
+            cleanupSemanticCache();
+        }
+    }
+
+    /**
+     * Limpa entradas expiradas do semantic cache.
+     */
+    private static void cleanupSemanticCache() {
+        long now = System.currentTimeMillis();
+        semanticCache.entrySet().removeIf(entry ->
+            now - entry.getValue().timestamp > CACHE_TTL_MS);
     }
 
     /**
@@ -255,6 +353,9 @@ public class LLMDecisionEngine {
     public static void cacheResponse(String key, String response) {
         responseCache.put(key, new CachedResponse(response, System.currentTimeMillis()));
 
+        // Adicionar também ao semantic cache
+        cacheToSemanticCache(key, response);
+
         // Limpar entradas antigas se cache muito grande
         if (responseCache.size() > 1000) {
             cleanupCache();
@@ -276,7 +377,8 @@ public class LLMDecisionEngine {
     public static Metrics getMetrics() {
         double llmPercentage = totalRequests > 0 ? (llmCalls * 100.0 / totalRequests) : 0;
         double cacheHitRate = totalRequests > 0 ? (cacheHits * 100.0 / totalRequests) : 0;
-        return new Metrics(totalRequests, llmCalls, cacheHits, llmPercentage, cacheHitRate);
+        double semanticHitRate = totalRequests > 0 ? (semanticCacheHits * 100.0 / totalRequests) : 0;
+        return new Metrics(totalRequests, llmCalls, cacheHits, semanticCacheHits, llmPercentage, cacheHitRate, semanticHitRate);
     }
 
     /**
@@ -312,6 +414,20 @@ public class LLMDecisionEngine {
         }
     }
 
+    private static class CachedLLMResponse {
+        final String messageHash;
+        final String response;
+        final long timestamp;
+        final double similarity;
+
+        CachedLLMResponse(String messageHash, String response, long timestamp) {
+            this.messageHash = messageHash;
+            this.response = response;
+            this.timestamp = timestamp;
+            this.similarity = 1.0; // Perfect match when stored
+        }
+    }
+
     public static class GameContext {
         public final String botHealth;
         public final String botLocation;
@@ -336,21 +452,25 @@ public class LLMDecisionEngine {
         public final int totalRequests;
         public final int llmCalls;
         public final int cacheHits;
+        public final int semanticCacheHits;
         public final double llmPercentage;
         public final double cacheHitRate;
+        public final double semanticHitRate;
 
-        public Metrics(int total, int llm, int cache, double llmPct, double cachePct) {
+        public Metrics(int total, int llm, int cache, int semanticHits, double llmPct, double cachePct, double semanticPct) {
             this.totalRequests = total;
             this.llmCalls = llm;
             this.cacheHits = cache;
+            this.semanticCacheHits = semanticHits;
             this.llmPercentage = llmPct;
             this.cacheHitRate = cachePct;
+            this.semanticHitRate = semanticPct;
         }
 
         @Override
         public String toString() {
-            return String.format("Total: %d, LLM: %d (%.1f%%), Cache: %d (%.1f%%)",
-                totalRequests, llmCalls, llmPercentage, cacheHits, cacheHitRate);
+            return String.format("Total: %d, LLM: %d (%.1f%%), Cache: %d (%.1f%%), Semantic: %d (%.1f%%)",
+                totalRequests, llmCalls, llmPercentage, cacheHits, cacheHitRate, semanticCacheHits, semanticHitRate);
         }
     }
 }

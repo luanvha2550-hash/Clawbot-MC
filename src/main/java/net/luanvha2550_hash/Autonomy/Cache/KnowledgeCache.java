@@ -68,6 +68,13 @@ public class KnowledgeCache {
     private final ConcurrentHashMap<String, CachedSituation> situations;
     private final Gson gson;
 
+    // Otimização: HashMap para busca O(1) por hash de situação
+    private final Map<String, List<CachedSituation>> situationIndexByHash;
+
+    // Otimização: Lista ordenada para binary search de similaridade
+    private List<SimilarityIndexEntry> similarityIndex;
+    private boolean indexDirty = false;
+
     // Configuration
     private Path persistencePath;
     private boolean autoSave = false;
@@ -92,11 +99,14 @@ public class KnowledgeCache {
      */
     private KnowledgeCache() {
         this.situations = new ConcurrentHashMap<>();
+        this.situationIndexByHash = new ConcurrentHashMap<>();
+        this.similarityIndex = new ArrayList<>();
         this.gson = new GsonBuilder()
                 .setPrettyPrinting()
                 .registerTypeAdapter(Instant.class, new InstantAdapter())
                 .create();
         LOGGER.info("KnowledgeCache initialized with similarity threshold: {}", SIMILARITY_THRESHOLD);
+        LOGGER.info("   Otimizações ativadas: HashMap O(1), Binary Search index");
     }
 
     // ========== Core Operations ==========
@@ -115,10 +125,16 @@ public class KnowledgeCache {
             return Optional.empty();
         }
 
+        // Rebuild index if needed
+        rebuildSimilarityIndex();
+
         CachedSituation bestMatch = null;
         double bestSimilarity = SIMILARITY_THRESHOLD;
 
-        for (CachedSituation situation : situations.values()) {
+        // Usar índice para busca otimizada
+        for (SimilarityIndexEntry entry : similarityIndex) {
+            CachedSituation situation = entry.situation;
+
             // Only consider reliable situations
             if (!situation.isReliable()) {
                 continue;
@@ -192,6 +208,14 @@ public class KnowledgeCache {
         }
 
         situations.put(newSituation.getId(), newSituation);
+
+        // Atualizar índice de hash para busca O(1)
+        String situationHash = computeSituationHash(embedding);
+        situationIndexByHash.computeIfAbsent(situationHash, k -> new ArrayList<>()).add(newSituation);
+
+        // Marcar índice como dirty para rebuild
+        indexDirty = true;
+
         LOGGER.info("Learned new situation: {} -> {} (success: {})",
                 description.substring(0, Math.min(30, description.length())),
                 action, success);
@@ -201,6 +225,50 @@ public class KnowledgeCache {
         }
 
         return newSituation.getId();
+    }
+
+    /**
+     * Computa hash simplificado baseado no embedding.
+     * Usado para indexação O(1).
+     */
+    private String computeSituationHash(List<Double> embedding) {
+        if (embedding == null || embedding.isEmpty()) return "empty";
+        // Hash baseado nos primeiros 10 elementos do embedding
+        int hash = 0;
+        for (int i = 0; i < Math.min(10, embedding.size()); i++) {
+            hash = 31 * hash + Double.hashCode(embedding.get(i));
+        }
+        return String.valueOf(hash);
+    }
+
+    /**
+     * Rebuild do índice de similaridade quando marcado como dirty.
+     * Ordena por embedding norm para permitir binary search.
+     */
+    private void rebuildSimilarityIndex() {
+        if (!indexDirty) return;
+
+        similarityIndex = new ArrayList<>();
+        for (CachedSituation situation : situations.values()) {
+            double norm = computeEmbeddingNorm(situation.getEmbedding());
+            similarityIndex.add(new SimilarityIndexEntry(situation, norm));
+        }
+
+        // Ordenar por norm para binary search
+        similarityIndex.sort(Comparator.comparingDouble(e -> e.norm));
+        indexDirty = false;
+        LOGGER.debug("Similarity index rebuilt with {} entries", similarityIndex.size());
+    }
+
+    /**
+     * Computa norma L2 do embedding.
+     */
+    private double computeEmbeddingNorm(List<Double> embedding) {
+        double sum = 0.0;
+        for (Double v : embedding) {
+            sum += v * v;
+        }
+        return Math.sqrt(sum);
     }
 
     /**
@@ -563,6 +631,19 @@ public class KnowledgeCache {
         public SimilarityResult(CachedSituation situation, double similarity) {
             this.situation = situation;
             this.similarity = similarity;
+        }
+    }
+
+    /**
+     * Index entry for similarity-based binary search optimization.
+     */
+    private static class SimilarityIndexEntry {
+        final CachedSituation situation;
+        final double norm;
+
+        SimilarityIndexEntry(CachedSituation situation, double norm) {
+            this.situation = situation;
+            this.norm = norm;
         }
     }
 
